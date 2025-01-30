@@ -1712,18 +1712,25 @@ class GemFinder:
                     ):
                         if message.sender_id == 6872314605 and not soul_data:
                             logger.info(f"{current_time} UTC | INFO | User {current_user}: Soul Scanner response received")
-                            soul_data = self.parse_soul_scanner_response(message.text)
+                            # Išsaugome žinutės tekstą
+                            message_text = message.text
+                            logger.info(f"{current_time} UTC | INFO | User {current_user}: Raw Soul Scanner Response:\n{message_text}")
+                            
+                            soul_data = self.parse_soul_scanner_response(message_text)
                             
                             # Spausdiname Soul Scanner duomenis
                             if soul_data:
                                 logger.info(f"{current_time} UTC | INFO | User {current_user}: Soul Scanner data parsed successfully")
                                 logger.info(f"{current_time} UTC | INFO | User {current_user}: Soul Scanner Data:")
-                                for key, value in soul_data.items():
+                                for key, value in sorted(soul_data.items()):
                                     logger.info(f"{current_time} UTC | INFO | User {current_user}: {key}: {value}")
                             
                         elif message.sender_id == 6344329830 and not gmgn_data:
                             logger.info(f"{current_time} UTC | INFO | User {current_user}: GMGN response received")
-                            gmgn_data = self.parse_gmgn_response(message.text)
+                            message_text = message.text
+                            logger.info(f"{current_time} UTC | INFO | User {current_user}: Raw GMGN Response:\n{message_text}")
+                            
+                            gmgn_data = self.parse_gmgn_response(message_text)
                             
                             # Spausdiname GMGN duomenis
                             if gmgn_data:
@@ -1791,6 +1798,7 @@ class GemFinder:
             
         except Exception as e:
             logger.error(f"{current_time} UTC | ERROR | User {current_user}: Error collecting token data: {e}")
+            logger.error(f"Exception traceback: {e.__traceback__.tb_lineno}")
             return None
 
     def combine_data(self, soul_data: Dict, gmgn_data: Dict, token_address: str) -> TokenMetrics:
@@ -1912,60 +1920,100 @@ class GemFinder:
             Dict: Structured data containing all parsed fields
         """
         try:
-            logger.info("2025-01-29 22:59:15 UTC | INFO | User minijus05: Starting parse")
+            current_time = "2025-01-30 08:14:51"
+            current_user = "minijus05"
+            
+            logger.info(f"{current_time} UTC | INFO | User {current_user}: Starting Soul Scanner parse")
+            logger.info(f"{current_time} UTC | INFO | User {current_user}: Raw text to parse:\n{text}")
+            
             data = {}
+            lines = text.split('\n')
             
             # Name and Symbol
-            if match := re.search(r'💠\s*[^\w]*([^•\n]+?)(?:\s*•\s*)\$([A-Z0-9]+)', text.split('\n')[0]):
-                data['name'] = match.group(1).strip()
-                data['symbol'] = match.group(2)
+            first_line = lines[0] if lines else ""
+            if name_match := re.search(r'💠\s*([^•]+)•\s*\$([A-Z0-9]+)', first_line):
+                data['name'] = name_match.group(1).strip()
+                data['symbol'] = name_match.group(2)
+                logger.info(f"{current_time} UTC | INFO | User {current_user}: Found name: {data['name']}, symbol: {data['symbol']}")
             
             # Token Address
-            if address_match := re.search(r'\n([A-Za-z0-9]{32,})\n', text):
-                data['token_address'] = address_match.group(1)
+            for line in lines:
+                if address_match := re.search(r'\n([A-Za-z0-9]{32,})\n', line):
+                    data['token_address'] = address_match.group(1)
+                    logger.info(f"{current_time} UTC | INFO | User {current_user}: Found address: {data['token_address']}")
+                    break
             
-            # Market Cap
-            if match := re.search(r'💰\s*MC:\s*\$([0-9,.]+)K\s*•\s*🔝\s*\$([0-9,.]+)([KM])', text):
-                data['market_cap'] = float(match.group(1)) * 1000
-                multiplier = 1000 if match.group(3) == 'K' else 1000000
-                data['ath_market_cap'] = float(match.group(2)) * multiplier
+            # Market Cap and ATH
+            for line in lines:
+                if '💰' in line:
+                    if mc_match := re.search(r'MC:\s*\$([0-9,.]+)K\s*•\s*🔝\s*\$([0-9,.]+)([KM])', line):
+                        data['market_cap'] = float(mc_match.group(1).replace(',', '')) * 1000
+                        multiplier = 1000000 if mc_match.group(3) == 'M' else 1000
+                        data['ath_market_cap'] = float(mc_match.group(2).replace(',', '')) * multiplier
+                        logger.info(f"{current_time} UTC | INFO | User {current_user}: Found market cap: ${data['market_cap']}, ATH: ${data['ath_market_cap']}")
+                    break
             
-            # Liquidity
-            if match := re.search(r'💧\s*Liq:\s*\$([0-9,.]+)K\s*\(([0-9,.]+)\s*SOL\)', text):
-                data['liquidity'] = float(match.group(1)) * 1000
-                data['sol_pooled'] = float(match.group(2))
+            # Liquidity and SOL pooled
+            for line in lines:
+                if '💧' in line:
+                    if liq_match := re.search(r'Liq:\s*\$([0-9,.]+)K\s*\(([0-9,.]+)\s*SOL\)', line):
+                        data['liquidity'] = float(liq_match.group(1).replace(',', '')) * 1000
+                        data['sol_pooled'] = float(liq_match.group(2))
+                        logger.info(f"{current_time} UTC | INFO | User {current_user}: Found liquidity: ${data['liquidity']}, SOL pooled: {data['sol_pooled']}")
+                    break
             
-            # Volume
-            if match := re.search(r'📈\s*Vol:\s*1h:\s*\$([0-9,.]+)(K|M)', text):
-                amount = float(match.group(1))
-                multiplier = 1000 if match.group(2) == 'K' else 1000000
-                data['volume_1h'] = amount * multiplier
+            # Volume (24h)
+            for line in lines:
+                if 'Vol:' in line and '1d:' in line:
+                    if vol_match := re.search(r'1d:\s*\$([0-9,.]+)([KM])', line):
+                        amount = float(vol_match.group(1).replace(',', ''))
+                        multiplier = 1000000 if vol_match.group(2) == 'M' else 1000
+                        data['volume_24h'] = amount * multiplier
+                        logger.info(f"{current_time} UTC | INFO | User {current_user}: Found 24h volume: ${data['volume_24h']}")
+                    break
             
-            # Price Change
-            if match := re.search(r'📈\s*Price:\s*1h:\s*([-+]?[0-9.]+)%', text):
-                data['price_change_1h'] = float(match.group(1))
+            # Price Change (24h)
+            for line in lines:
+                if 'Price:' in line and '1d:' in line:
+                    if price_match := re.search(r'1d:\s*([-+]?[0-9.]+)%', line):
+                        data['price_change_24h'] = float(price_match.group(1))
+                        logger.info(f"{current_time} UTC | INFO | User {current_user}: Found 24h price change: {data['price_change_24h']}%")
+                    break
             
             # Age
-            if match := re.search(r'🕒\s*Age:\s*(\d+)(m|h|d)', text):
-                amount = float(match.group(1))
-                if match.group(2) == 'm':
-                    data['age_hours'] = amount / 60
-                elif match.group(2) == 'h':
-                    data['age_hours'] = amount
-                else:  # days
-                    data['age_hours'] = amount * 24
+            for line in lines:
+                if '🕒' in line:
+                    if age_match := re.search(r'Age:\s*(\d+)(m|h|d)', line):
+                        amount = float(age_match.group(1))
+                        unit = age_match.group(2)
+                        # Convert to hours
+                        data['age'] = amount / 60 if unit == 'm' else amount if unit == 'h' else amount * 24
+                        logger.info(f"{current_time} UTC | INFO | User {current_user}: Found age: {data['age']} hours")
+                    break
             
             # Holders and Top Holder
-            if match := re.search(r'Hodls.*?:\s*([\d,]+)\s*•\s*Top:\s*([0-9.]+)%', text):
-                data['holders_count'] = int(match.group(1).replace(',', ''))
-                data['top_holder'] = float(match.group(2))
+            for line in lines:
+                if 'Hodls' in line:
+                    if holders_match := re.search(r'Hodls.*?:\s*([0-9,]+)\s*•\s*Top:\s*([0-9.]+)%', line):
+                        data['holders_count'] = int(holders_match.group(1).replace(',', ''))
+                        data['top_holder'] = float(holders_match.group(2))
+                        logger.info(f"{current_time} UTC | INFO | User {current_user}: Found holders: {data['holders_count']}, top holder: {data['top_holder']}%")
+                    break
             
             # LP Status
             data['lp_burnt'] = 100.0 if "100% Burnt" in text else 99.0 if "99% Burnt" in text else 0.0
+            logger.info(f"{current_time} UTC | INFO | User {current_user}: Found LP burnt: {data['lp_burnt']}%")
             
             # Mint and Freeze Status
-            data['mint_enabled'] = '🔴' in text.split('Mint')[1].split('|')[0] if 'Mint' in text else False
-            data['freeze_enabled'] = '🔴' in text.split('Freeze')[1].split('\n')[0] if 'Freeze' in text else False
+            if 'Mint' in text:
+                mint_section = text.split('Mint')[1].split('|')[0]
+                data['mint_enabled'] = '🔴' in mint_section
+                logger.info(f"{current_time} UTC | INFO | User {current_user}: Mint enabled: {data['mint_enabled']}")
+            
+            if 'Freeze' in text:
+                freeze_section = text.split('Freeze')[1].split('\n')[0]
+                data['freeze_enabled'] = '🔴' in freeze_section
+                logger.info(f"{current_time} UTC | INFO | User {current_user}: Freeze enabled: {data['freeze_enabled']}")
             
             # Dev info
             if dev_match := re.search(r'Dev.*?:\s*(\d+)\s*SOL\s*\|\s*(\d+)%.*?\nSniped:\s*(\d+)%.*?\nAirdrop:\s*(\d+)%', text, re.DOTALL):
@@ -1973,26 +2021,29 @@ class GemFinder:
                 data['dev_token_percentage'] = float(dev_match.group(2))
                 data['dev_sniped_percentage'] = float(dev_match.group(3))
                 data['dev_airdrop_percentage'] = float(dev_match.group(4))
+                logger.info(f"{current_time} UTC | INFO | User {current_user}: Found dev info - SOL: {data['dev_sol_balance']}, Token %: {data['dev_token_percentage']}%")
             
             # Snipers info
             if sniper_match := re.search(r'🔫\s*Snipers:\s*(\d+)\s*•\s*([0-9.]+)%', text):
-                data['snipers_count'] = int(sniper_match.group(1))
-                data['snipers_percentage'] = float(sniper_match.group(2))
+                data['sniper_count'] = int(sniper_match.group(1))
+                data['sniper_percentage'] = float(sniper_match.group(2))
+                logger.info(f"{current_time} UTC | INFO | User {current_user}: Found snipers: {data['sniper_count']}, {data['sniper_percentage']}%")
             
             # First 20 info
-            if first20_match := re.search(r'First 20.*?:\s*(\d+)\s*Fresh\s*•\s*(\d+)%', text):
-                data['fresh_wallets'] = int(first20_match.group(1))
-                data['fresh_wallets_percentage'] = float(first20_match.group(2))
-            
-            # Scans info
-            if scans_match := re.search(r'Scans:\s*(\d+)', text):
-                data['scan_count'] = int(scans_match.group(1))
+            if first20_match := re.search(r'First 20.*?:\s*(\d+)\s*Fresh', text):
+                data['first_20_fresh'] = int(first20_match.group(1))
+                logger.info(f"{current_time} UTC | INFO | User {current_user}: Found fresh wallets: {data['first_20_fresh']}/20")
             
             # Social links
             if 'X (' in text:
-                data['x_link'] = re.search(r'X \((https://[^)]+)\)', text).group(1)
+                if twitter_match := re.search(r'X \((https://[^)]+)\)', text):
+                    data['twitter_url'] = twitter_match.group(1)
+                    logger.info(f"{current_time} UTC | INFO | User {current_user}: Found Twitter URL: {data['twitter_url']}")
+            
             if 'WEB (' in text:
-                data['website'] = re.search(r'WEB \((https://[^)]+)\)', text).group(1)
+                if web_match := re.search(r'WEB \((https://[^)]+)\)', text):
+                    data['website_url'] = web_match.group(1)
+                    logger.info(f"{current_time} UTC | INFO | User {current_user}: Found Website URL: {data['website_url']}")
             
             # Warning flags
             data['warnings'] = []
@@ -2006,27 +2057,20 @@ class GemFinder:
             if 'High Top Ten' in text:
                 data['warnings'].append('high_top_ten')
             
-            # Additional warning checks
-            if 'Top:' in text:
-                top_match = re.search(r'Top:\s*([0-9.]+)%\s*⚠️', text)
-                if top_match and float(top_match.group(1)) > 40:
-                    data['warnings'].append('high_top_holder')
+            logger.info(f"{current_time} UTC | INFO | User {current_user}: Found {len(data['warnings'])} warnings: {data['warnings']}")
             
-            if 'Snipers:' in text:
-                sniper_match = re.search(r'Snipers:\s*\d+\s*•\s*([0-9.]+)%\s*🚨', text)
-                if sniper_match and float(sniper_match.group(1)) > 75:
-                    data['warnings'].append('high_sniper_ratio')
-            
-            # Metadata
-            data['parsed_at'] = "2025-01-29 22:59:15"
-            data['parsed_by'] = "minijus05"
+            # Final logging
+            logger.info(f"{current_time} UTC | INFO | User {current_user}: Parsing completed. Fields parsed: {len(data)}")
+            logger.info(f"{current_time} UTC | INFO | User {current_user}: Parsed fields: {list(data.keys())}")
             
             return data
             
         except Exception as e:
-            logger.error(f"2025-01-29 22:59:15 UTC | INFO | User minijus05: Error: {e}")
+            logger.error(f"{current_time} UTC | ERROR | User {current_user}: Error parsing Soul Scanner response: {str(e)}")
+            logger.error(f"{current_time} UTC | ERROR | User {current_user}: Error location: {e.__traceback__.tb_lineno}")
+            logger.error(f"{current_time} UTC | ERROR | User {current_user}: Raw text that caused error:\n{text}")
             return {}
-                
+                    
 
     def parse_gmgn_response(self, text: str) -> Dict:
         """GMGN boto atsakymo parsinimas"""
