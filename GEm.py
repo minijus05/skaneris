@@ -3,7 +3,7 @@ import sys
 import nest_asyncio
 import logging
 from dataclasses import dataclass
-from dataclasses import fields
+from dataclasses import dataclass, fields, field
 from datetime import datetime, timezone, timedelta
 import time 
 from typing import List, Dict, Optional, Union
@@ -250,45 +250,35 @@ class TokenMetrics:
     address: str
     name: str
     symbol: str
-    creation_date: datetime
+    age: str
     
     # Price metrics (required fields)
     price: float
     market_cap: float
-    liquidity: float
-    volume_24h: float
-    price_change_24h: float
+    liquidity: Dict[str, float]  # {'usd': float, 'sol': float}
+    volume: Dict[str, float]  # {'1h': float, '24h': float}
+    price_change: Dict[str, float]  # {'1h': float, '24h': float}
     
     # Security metrics (required fields)
-    mint_enabled: bool
-    freeze_enabled: bool
-    lp_burnt_percentage: float
+    mint_status: bool
+    freeze_status: bool
+    lp_status: bool
     
     # Holder metrics (required fields)
-    holders_count: int
-    top_holder_percentage: float
-    top_10_holders: List[Dict]
+    holders: Dict[str, Union[int, float]]  # {'count': int, 'top_percentage': float}
+    sniper_wallets: List[Dict[str, str]]  # [{'type': str, 'address': str}]
     
-    # Trading metrics (required fields)
-    sniper_count: int
-    sniper_percentage: float
-    first_20_fresh: int
-    first_70_status: Dict[str, int]
+    # Dev info
+    dev: Dict[str, Union[float, str, int]]
+    
+    # Social info (required fields)
+    social_links: Dict[str, str]  # {'X': str, 'WEB': str}
+    total_scans: int
     
     # Optional fields (with default values)
-    ath_market_cap: float = 0
-    ath_multiplier: float = 1.0
-    owner_renounced: bool = False
-    telegram_members: Optional[int] = None
-    twitter_followers: Optional[int] = None
-    website_url: Optional[str] = None
-    dev_wallet: Optional[str] = None
-    dev_sol_balance: float = 0
-    dev_token_percentage: float = 0
-
-
-    telegram_url: Optional[str] = None  # Pakeista iš telegram_members
-    twitter_url: Optional[str] = None   # Pakeista iš twitter_followers
+    ath_market_cap: float = 0.0
+    first_20: int = 0
+    first_70_status: Dict[str, float] = field(default_factory=lambda: {'current': 0.0, 'initial': 0.0})
 
 class GemScorer:
     def __init__(self):
@@ -1714,7 +1704,7 @@ class GemFinder:
                             logger.info(f"{current_time} UTC | INFO | User {current_user}: Soul Scanner response received")
                             # Išsaugome žinutės tekstą
                             message_text = message.text
-                            logger.info(f"{current_time} UTC | INFO | User {current_user}: Raw Soul Scanner Response:\n{message_text}")
+                            
                             
                             soul_data = self.parse_soul_scanner_response(message_text)
                             
@@ -1728,7 +1718,7 @@ class GemFinder:
                         elif message.sender_id == 6344329830 and not gmgn_data:
                             logger.info(f"{current_time} UTC | INFO | User {current_user}: GMGN response received")
                             message_text = message.text
-                            logger.info(f"{current_time} UTC | INFO | User {current_user}: Raw GMGN Response:\n{message_text}")
+                            
                             
                             gmgn_data = self.parse_gmgn_response(message_text)
                             
@@ -1748,31 +1738,33 @@ class GemFinder:
                                 address=token_address,
                                 name=soul_data.get('name', 'Unknown').replace('**', '').replace('\u200e', ''),
                                 symbol=soul_data.get('symbol', 'Unknown'),
-                                creation_date=datetime.now(timezone.utc) - timedelta(hours=int(soul_data.get('age', 0))),
+                                age=soul_data.get('age', '0d'), 
                                 price=gmgn_data.get('price', 0.0),
                                 market_cap=soul_data.get('market_cap', 0.0),
-                                liquidity=soul_data.get('liquidity', 0.0),
-                                volume_24h=soul_data.get('volume_24h', 0.0),
-                                price_change_24h=soul_data.get('price_change_24h', 0.0),
-                                mint_enabled=soul_data.get('mint_enabled', False),
-                                freeze_enabled=soul_data.get('freeze_enabled', False),
-                                lp_burnt_percentage=soul_data.get('lp_burnt', 0.0),
-                                holders_count=soul_data.get('holders_count', 0),
-                                top_holder_percentage=soul_data.get('top_holder', 0.0),
-                                top_10_holders=gmgn_data.get('top_10_holders', []),
-                                sniper_count=soul_data.get('sniper_count', 0),
-                                sniper_percentage=soul_data.get('sniper_percentage', 0.0),
-                                first_20_fresh=soul_data.get('first_20_fresh', 0),
+                                liquidity=soul_data.get('liquidity', {}).get('usd', 0.0),
+                                volume_1h=soul_data.get('volume', {}).get('1h', 0.0),
+                                volume_24h=soul_data.get('volume', {}).get('24h', 0.0),
+                                price_change_1h=soul_data.get('price_change', {}).get('1h', 0.0),
+                                price_change_24h=soul_data.get('price_change', {}).get('24h', 0.0),
+                                mint_enabled=soul_data.get('mint_status', False),
+                                freeze_enabled=soul_data.get('freeze_status', False),
+                                lp_burnt_percentage=100 if soul_data.get('lp_status', False) else 0,
+                                holders_count=soul_data.get('holders', {}).get('count', 0),
+                                top_holder_percentage=soul_data.get('holders', {}).get('top_percentage', 0.0),
+                                top_10_percentage=gmgn_data.get('top_10_percentage', 0.0),
+                                sniper_count=soul_data.get('snipers', {}).get('count', 0),
+                                sniper_percentage=soul_data.get('snipers', {}).get('percentage', 0.0),
+                                first_20_fresh=soul_data.get('first_20', 0),
                                 first_70_status=gmgn_data.get('first_70_status', {'current': 0, 'initial': 0}),
                                 ath_market_cap=soul_data.get('ath_market_cap', 0.0),
-                                ath_multiplier=1.0,  # Bus apskaičiuota žemiau
-                                owner_renounced=soul_data.get('dev_token_percentage', 0.0) == 0,
-                                telegram_url=soul_data.get('telegram_url'),
-                                twitter_url=soul_data.get('twitter_url'),
-                                website_url=soul_data.get('website_url'),
-                                dev_wallet=soul_data.get('dev_wallet'),
-                                dev_sol_balance=soul_data.get('dev_sol_balance', 0.0),
-                                dev_token_percentage=soul_data.get('dev_token_percentage', 0.0)
+                                ath_multiplier=1.0,
+                                owner_renounced=soul_data.get('dev', {}).get('token_percentage', 0.0) == 0,
+                                telegram_url=soul_data.get('social_links', {}).get('TG'),
+                                twitter_url=soul_data.get('social_links', {}).get('X'),
+                                website_url=soul_data.get('social_links', {}).get('WEB'),
+                                dev_wallet=None,  # Dev wallet info yra dev objekto viduje
+                                dev_sol_balance=soul_data.get('dev', {}).get('sol_balance', 0.0),
+                                dev_token_percentage=soul_data.get('dev', {}).get('token_percentage', 0.0)
                             )
                             
                             # Apskaičiuojame ATH multiplier
@@ -1804,54 +1796,55 @@ class GemFinder:
     def combine_data(self, soul_data: Dict, gmgn_data: Dict, token_address: str) -> TokenMetrics:
         """Sujungia duomenis iš Soul Scanner ir GMGN į vieną TokenMetrics objektą"""
         try:
-            logger.info(f"2025-01-29 21:52:04 UTC | INFO | User minijus05: Combining data from both scanners")
+            logger.info(f"2025-01-30 15:47:18 UTC | INFO | User minijus05: Combining data from both scanners")
             
-            # Sukuriame TokenMetrics objektą, prioritetizuojant Soul Scanner duomenis
+            # Sukuriame TokenMetrics objektą
             metrics = TokenMetrics(
                 address=token_address,
                 name=soul_data.get('name', 'Unknown').replace('**', '').replace('\u200e', ''),
                 symbol=soul_data.get('symbol', 'Unknown'),
-                creation_date=datetime.now(timezone.utc) - timedelta(hours=int(soul_data.get('age', 0) * 24)),  # Soul Scanner age į hours
-                price=gmgn_data.get('price', 0.0),  # Tik iš GMGN, nes tikslesnė
+                age=soul_data.get('age', '0d'), 
+                price=gmgn_data.get('price', 0.0),
                 market_cap=soul_data.get('market_cap', 0.0),
-                liquidity=soul_data.get('liquidity', 0.0),
-                volume_24h=soul_data.get('volume_24h', 0.0),
-                price_change_24h=soul_data.get('price_change_24h', 0.0),
-                mint_enabled=soul_data.get('mint_enabled', False),
-                freeze_enabled=soul_data.get('freeze_enabled', False),
-                lp_burnt_percentage=soul_data.get('lp_burnt', 0.0),
-                holders_count=soul_data.get('holders_count', 0),
-                top_holder_percentage=soul_data.get('top_holder', 0.0),
-                top_10_holders=gmgn_data.get('top_10_holders', []),  # Tik iš GMGN
-                sniper_count=soul_data.get('sniper_count', 0),
-                sniper_percentage=soul_data.get('sniper_percentage', 0.0),
-                first_20_fresh=soul_data.get('first_20_fresh', 0),
-                first_70_status=gmgn_data.get('first_70_status', {'current': 0, 'initial': 0}),  # Tik iš GMGN
+                liquidity=soul_data.get('liquidity', {}).get('usd', 0.0),
+                volume_1h=soul_data.get('volume', {}).get('1h', 0.0),
+                volume_24h=soul_data.get('volume', {}).get('24h', 0.0),
+                price_change_1h=soul_data.get('price_change', {}).get('1h', 0.0),
+                price_change_24h=soul_data.get('price_change', {}).get('24h', 0.0),
+                mint_enabled=soul_data.get('mint_status', False),
+                freeze_enabled=soul_data.get('freeze_status', False),
+                lp_burnt_percentage=100 if soul_data.get('lp_status', False) else 0,
+                holders_count=soul_data.get('holders', {}).get('count', 0),
+                top_holder_percentage=soul_data.get('holders', {}).get('top_percentage', 0.0),
+                top_10_percentage=gmgn_data.get('top_10_percentage', 0.0),
+                sniper_count=soul_data.get('snipers', {}).get('count', 0),
+                sniper_percentage=soul_data.get('snipers', {}).get('percentage', 0.0),
+                first_20_fresh=soul_data.get('first_20', 0),
+                first_70_status=gmgn_data.get('first_70_status', {'current': 0, 'initial': 0}),
                 ath_market_cap=soul_data.get('ath_market_cap', 0.0),
-                ath_multiplier=1.0,  # Bus apskaičiuota žemiau
-                owner_renounced=soul_data.get('dev_token_percentage', 0.0) == 0,
-                telegram_url=soul_data.get('telegram_url'),
-                twitter_url=soul_data.get('twitter_url'),
-                website_url=soul_data.get('website_url'),
-                dev_wallet=soul_data.get('dev_wallet'),
-                dev_sol_balance=soul_data.get('dev_sol_balance', 0.0),
-                dev_token_percentage=soul_data.get('dev_token_percentage', 0.0)
+                ath_multiplier=1.0,
+                owner_renounced=soul_data.get('dev', {}).get('token_percentage', 0.0) == 0,
+                telegram_url=soul_data.get('social_links', {}).get('TG'),
+                twitter_url=soul_data.get('social_links', {}).get('X'),
+                website_url=soul_data.get('social_links', {}).get('WEB'),
+                dev_wallet=None,
+                dev_sol_balance=soul_data.get('dev', {}).get('sol_balance', 0.0),
+                dev_token_percentage=soul_data.get('dev', {}).get('token_percentage', 0.0)
             )
             
             # Apskaičiuojame ATH multiplier
             if metrics.market_cap > 0 and metrics.ath_market_cap > 0:
                 metrics.ath_multiplier = metrics.ath_market_cap / metrics.market_cap
                 
-            # Loginame sujungtus duomenis
-            logger.info(f"2025-01-29 21:52:04 UTC | INFO | User minijus05: Combined TokenMetrics Data:")
+            logger.info(f"2025-01-30 15:47:18 UTC | INFO | User minijus05: Combined TokenMetrics Data:")
             for field in fields(metrics):
                 value = getattr(metrics, field.name)
-                logger.info(f"2025-01-29 21:52:04 UTC | INFO | User minijus05: {field.name}: {value}")
+                logger.info(f"2025-01-30 15:47:18 UTC | INFO | User minijus05: {field.name}: {value}")
             
             return metrics
                 
         except Exception as e:
-            logger.error(f"2025-01-29 21:52:04 UTC | ERROR | User minijus05: Error combining data: {e}")
+            logger.error(f"2025-01-30 15:47:18 UTC | ERROR | User minijus05: Error combining data: {e}")
             raise
 
     
@@ -1943,10 +1936,7 @@ class GemFinder:
             data = {}
             lines = text.split('\n')
 
-            #Debug prints PRIEŠ loop'ą
-            print("\nDEBUGGING MESSAGE LINES:")
-            for l in lines:
-                print(f"RAW LINE: '{l}'")
+            
             
             for line in lines:
                 try:
@@ -1999,55 +1989,82 @@ class GemFinder:
                     
                     # Volume
                     elif 'Vol:' in line:
-                        print(f"DEBUG VOL LINE: {line}")  # Debug
-                        print(f"DEBUG CLEAN VOL LINE: {clean_line}")  # Debug
+                        
+                        clean_line = self.clean_line(line)
+                        
                         try:
-                            # 1h volume - ieškome $X.XM arba $X.XK
-                            vol_1h = re.search(r'\$(\d+\.?\d*)[MK]', line)
+                            data['volume'] = {'1h': 0.0, '24h': 0.0}
+                            
+                            parts = clean_line.split('|')
+                            
+                            # 1h volume
+                            vol_1h = re.search(r'\$(\d+\.?\d*)(K|M)?', parts[0])
                             if vol_1h:
                                 value = float(vol_1h.group(1))
-                                if 'M' in vol_1h.group(0):
-                                    value *= 1000000  # Jei M, dauginam iš milijono
-                                elif 'K' in vol_1h.group(0):
-                                    value *= 1000    # Jei K, dauginam iš tūkstančio
-                                data['volume'] = {'1h': value}
-                                print(f"DEBUG VOL 1H: {value}")  # Debug
+                                if vol_1h.group(2) == 'K':
+                                    value *= 1000
+                                elif vol_1h.group(2) == 'M':
+                                    value *= 1000000
+                                data['volume']['1h'] = value
                                 
-                            # 24h volume (jei yra)
-                            if '|' in line:
-                                vol_24h = re.search(r'\|\s*\$(\d+\.?\d*)[MK]', line)
+                            
+                            # 24h volume
+                            if len(parts) > 1:
+                                vol_24h = re.search(r'\$(\d+\.?\d*)(K|M)?', parts[1])
                                 if vol_24h:
                                     value = float(vol_24h.group(1))
-                                    if 'M' in vol_24h.group(0):
-                                        value *= 1000000
-                                    elif 'K' in vol_24h.group(0):
+                                    if vol_24h.group(2) == 'K':
                                         value *= 1000
+                                    elif vol_24h.group(2) == 'M':
+                                        value *= 1000000
                                     data['volume']['24h'] = value
-                                    print(f"DEBUG VOL 24H: {value}")  # Debug
+                                    
+                            
+                            
+                                
                         except Exception as e:
                             print(f"Volume error: {str(e)}")
-                    
+
                     # Price Changes
                     elif 'Price:' in line:
-                        print(f"DEBUG PRICE LINE: {line}")  # Debug
+                        
+                        clean_line = self.clean_line(line)
+                        
                         try:
                             parts = line.split('|')
-                            # 1h price - ieškome skaičiaus prieš %
-                            price_1h = re.search(r'([\d.]+)K?%', parts[0])
+                            data['price_change'] = {'1h': 0.0, '24h': 0.0}
+                            
+                            # 1h price
+                            if '🔻' in parts[0]:
+                                multiplier = -1
+                            else:
+                                multiplier = 1
+                                
+                            price_1h = re.search(r'[+]?([\d.]+)(K)?%', parts[0])
                             if price_1h:
                                 value = float(price_1h.group(1))
-                                if 'K' in price_1h.group(0):
+                                if price_1h.group(2) == 'K':
                                     value *= 1000
-                                data['price_change'] = {'1h': value}
+                                data['price_change']['1h'] = value * multiplier
                                 
-                            # 24h price (jei yra)
+                                
+                            # 24h price
                             if len(parts) > 1:
-                                price_24h = re.search(r'([\d.]+)K?%', parts[1])
+                                if '🔻' in parts[1]:
+                                    multiplier = -1
+                                else:
+                                    multiplier = 1
+                                    
+                                price_24h = re.search(r'[+]?([\d.]+)(K)?%', parts[1])
                                 if price_24h:
                                     value = float(price_24h.group(1))
-                                    if 'K' in price_24h.group(0):
+                                    if price_24h.group(2) == 'K':
                                         value *= 1000
-                                    data['price_change']['24h'] = value
+                                    data['price_change']['24h'] = value * multiplier
+                                    
+                                    
+                            
+                            
                         except Exception as e:
                             print(f"Price error: {str(e)}")
                     
@@ -2072,7 +2089,7 @@ class GemFinder:
                     
                     # Scans
                     elif any(emoji in line for emoji in ['⚡', '⚡️']) and 'Scans:' in line:  # Patikriname abu variantus
-                        print(f"DEBUG SCANS LINE: {line}")  # Debug
+                        
                         try:
                             # Pašalinam Markdown formatavimą ir ieškome skaičiaus
                             clean_line = re.sub(r'\*\*', '', line)
@@ -2080,7 +2097,7 @@ class GemFinder:
                             if scans_match:
                                 scan_count = int(scans_match.group(1))
                                 data['total_scans'] = scan_count
-                                print(f"DEBUG SCANS COUNT: {scan_count}")  # Debug
+                                
                                 
                             # Social links jau veikia teisingai, paliekame kaip yra
                             social_links = {}
@@ -2096,14 +2113,14 @@ class GemFinder:
                             
                             if social_links:
                                 data['social_links'] = social_links
-                                print(f"DEBUG SOCIALS: {social_links}")  # Debug
+                                
                                 
                         except Exception as e:
                             print(f"Scans error: {str(e)}")  # Debug printinam klaidas
                     
                     # Holders
                     elif 'Hodls' in line:
-                        print(f"DEBUG HODLS LINE: {line}")  # Debug
+                        
                         try:
                             # Ieškome skaičių su kableliais ir procentų
                             holders = re.search(r':\s*([0-9,]+)\s*•\s*Top:\s*([\d.]+)%', line)
@@ -2115,13 +2132,13 @@ class GemFinder:
                                     'count': holder_count,
                                     'top_percentage': top_percent
                                 }
-                                print(f"DEBUG HOLDERS: {holder_count}, TOP: {top_percent}%")  # Debug
+                                
                         except Exception as e:
                             print(f"Holders error: {str(e)}")
         
                     # Snipers
                     elif '🔫' in line and 'Snipers:' in line:
-                        print(f"DEBUG SNIPERS LINE: {line}")  # Debug
+                        
                         clean_line = re.sub(r'\*\*', '', line)  # Pašalinam Markdown
                         try:
                             # Ieškome tik skaičių ir procento, ignoruojam ⚠️
@@ -2131,7 +2148,7 @@ class GemFinder:
                                     'count': int(snipers_match.group(1)),
                                     'percentage': float(snipers_match.group(2))
                                 }
-                                print(f"DEBUG SNIPERS: count={data['snipers']['count']}, percentage={data['snipers']['percentage']}%")  # Debug
+                                
                         except Exception as e:
                             print(f"Snipers error: {str(e)}")
                     
@@ -2155,58 +2172,95 @@ class GemFinder:
                     
                     # Dev Info
                     elif '🛠️ Dev' in line:
-                        print(f"DEBUG DEV LINE: {line}")  # Debug
+                        
                         try:
                             if 'dev' not in data:
-                                data['dev'] = {}
+                                data['dev'] = {
+                                    'sol_balance': 0.0,
+                                    'token_percentage': 0.0,
+                                    'token_symbol': '',
+                                    'sniped_percentage': 0.0,
+                                    'sold_percentage': 0.0,
+                                    'airdrop_percentage': 0.0,
+                                    'tokens_made': 0,
+                                    'bonds': 0,
+                                    'best_mc': 0.0
+                                }
                             
-                            # Pašalinam Markdown formatavimą
-                            clean_line = re.sub(r'\*\*|\[|\]|\(.*?\)', '', line)
-                            print(f"DEBUG CLEAN DEV LINE: {clean_line}")  # Debug
+                            # Pašalinam Markdown formatavimą ir URL
+                            clean_line = re.sub(r'\*\*|\[|\]|\(https?://[^)]+\)', '', line)
                             
-                            # Ieškome SOL ir procento bei token symbol
-                            dev_match = re.search(r'Dev:\s*(\d+)\s*SOL\s*\|\s*(\d+)%\s*\$(\w+)', clean_line)
+                            
+                            # Ieškome SOL ir token info
+                            dev_match = re.search(r'Dev:?\s*(\d+)\s*SOL\s*\|\s*(\d+)%\s*\$(\w+)', clean_line)
                             if dev_match:
                                 data['dev'].update({
                                     'sol_balance': float(dev_match.group(1)),
                                     'token_percentage': float(dev_match.group(2)),
                                     'token_symbol': dev_match.group(3)
                                 })
-                                print(f"DEBUG DEV INFO: SOL={data['dev']['sol_balance']}, Token %={data['dev']['token_percentage']}, Symbol={data['dev']['token_symbol']}")  # Debug
+                                
+                                
                         except Exception as e:
-                            print(f"Dev info error: {str(e)}")
+                            print(f"Dev main info error: {str(e)}")
 
-                    # Sniped ir Sold (nekeičiame, nes veikia)
+                    # Sniped ir Sold info
                     elif 'Sniped:' in line:
-                        sniped = re.search(r'Sniped:\s*([\d.]+)%', clean_line)
-                        sold = re.search(r'Sold:\s*([\d.]+)%', clean_line)
-                        if sniped and sold:
+                        
+                        try:
                             if 'dev' not in data:
                                 data['dev'] = {}
-                            data['dev']['sniped_percentage'] = float(sniped.group(1))
-                            data['dev']['sold_percentage'] = float(sold.group(1))
+                            
+                            sniped = re.search(r'Sniped:\s*([\d.]+)%', clean_line)
+                            if sniped:
+                                data['dev']['sniped_percentage'] = float(sniped.group(1))
+                                
+                            
+                            sold = re.search(r'Sold:\s*([\d.]+)%', clean_line)
+                            if sold:
+                                data['dev']['sold_percentage'] = float(sold.group(1))
+                                
+                                
+                        except Exception as e:
+                            print(f"Sniped/Sold info error: {str(e)}")
 
-                    # Airdrop (nekeičiame, nes veikia)
+                    # Airdrop info
                     elif 'Airdrop:' in line:
-                        airdrop = re.search(r'Airdrop:\s*(\d+)%', clean_line)
-                        if airdrop:
+                        
+                        try:
                             if 'dev' not in data:
                                 data['dev'] = {}
-                            data['dev']['airdrop_percentage'] = float(airdrop.group(1))
+                            
+                            airdrop = re.search(r'Airdrop:\s*(\d+)%', clean_line)
+                            if airdrop:
+                                data['dev']['airdrop_percentage'] = float(airdrop.group(1))
+                                
+                                
+                        except Exception as e:
+                            print(f"Airdrop info error: {str(e)}")
 
-                    # Made, Bond, Best (nekeičiame, nes veikia)
+                    # Made, Bond, Best info
                     elif 'Made:' in line:
-                        made = re.search(r'Made:\s*(\d+)', line)
-                        bond = re.search(r'Bond:\s*(\d+)', line)
-                        best = re.search(r'Best:\s*\$(\d+\.?\d*)M', line)
-                        if made and bond and best:
+                        
+                        try:
                             if 'dev' not in data:
                                 data['dev'] = {}
-                            data['dev'].update({
-                                'tokens_made': int(made.group(1)),
-                                'bonds': int(bond.group(1)),
-                                'best_mc': float(best.group(1)) * 1000000
-                            })
+                                
+                            made = re.search(r'Made:\s*(\d+)', line)
+                            bond = re.search(r'Bond:\s*(\d+)', line)
+                            best = re.search(r'Best:\s*\$(\d+\.?\d*)M', line)
+                            
+                            if made and bond and best:
+                                data['dev'].update({
+                                    'tokens_made': int(made.group(1)),
+                                    'bonds': int(bond.group(1)),
+                                    'best_mc': float(best.group(1)) * 1000000
+                                })
+                                
+                                
+                        except Exception as e:
+                            print(f"Made/Bond/Best info error: {str(e)}")
+        
                 except Exception as e:
                     self.logger.warning(f"Error parsing line: {str(e)}")
                     continue
