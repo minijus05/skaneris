@@ -1909,166 +1909,312 @@ class GemFinder:
             logger.error(f"[2025-01-29 20:26:06] User minijus05: Error getting GMGN data: {e}")
             return None
 
-    def parse_soul_scanner_response(self, text: str) -> Dict:
+    def clean_line(self, text: str) -> str:
         """
-        Parses SoulScanner response text and returns structured data.
+        Išvalo tekstą nuo nereikalingų simbolių, bet palieka svarbius emoji
+        """
+        # Svarbus emoji sąrašas kurių NEREIKIA ištrinti
+        # Svarbus emoji sąrašas kurių NEREIKIA ištrinti
+        important_emoji = ['💠', '🤍', '✅', '❌', '🔻', '🐟', '🍤', '🐳', '🌱', '🕒', '📈', '⚡️', '👥', '🔗', '🦅', '🔫', '⚠️', '🛠']
         
-        Args:
-            text (str): The raw text from SoulScanner response
-            
-        Returns:
-            Dict: Structured data containing all parsed fields
-        """
+        # Pašalinam Markdown ir URL
+        cleaned = re.sub(r'\*\*|\[.*?\]|\(https?://[^)]+\)', '', text)
+        
+        # Pašalinam visus specialius simbolius, išskyrus svarbius emoji
+        result = ''
+        i = 0
+        while i < len(cleaned):
+            if any(cleaned.startswith(emoji, i) for emoji in important_emoji):
+                # Jei randame svarbų emoji, jį paliekame
+                emoji_found = next(emoji for emoji in important_emoji if cleaned.startswith(emoji, i))
+                result += emoji_found
+                i += len(emoji_found)
+            else:
+                # Kitaip tikriname ar tai normalus simbolis
+                if cleaned[i].isalnum() or cleaned[i] in ' .:$%|-()':
+                    result += cleaned[i]
+                i += 1
+        
+        return result.strip()
+
+    def parse_soul_scanner_response(self, text: str) -> Dict:
+        """Parse Soul Scanner message"""
         try:
-            current_time = "2025-01-30 08:14:51"
-            current_user = "minijus05"
-            
-            logger.info(f"{current_time} UTC | INFO | User {current_user}: Starting Soul Scanner parse")
-            logger.info(f"{current_time} UTC | INFO | User {current_user}: Raw text to parse:\n{text}")
-            
             data = {}
             lines = text.split('\n')
+
+            #Debug prints PRIEŠ loop'ą
+            print("\nDEBUGGING MESSAGE LINES:")
+            for l in lines:
+                print(f"RAW LINE: '{l}'")
             
-            # Name and Symbol
-            first_line = lines[0] if lines else ""
-            if name_match := re.search(r'💠\s*([^•]+)•\s*\$([A-Z0-9]+)', first_line):
-                data['name'] = name_match.group(1).strip()
-                data['symbol'] = name_match.group(2)
-                logger.info(f"{current_time} UTC | INFO | User {current_user}: Found name: {data['name']}, symbol: {data['symbol']}")
-            
-            # Token Address
             for line in lines:
-                if address_match := re.search(r'\n([A-Za-z0-9]{32,})\n', line):
-                    data['token_address'] = address_match.group(1)
-                    logger.info(f"{current_time} UTC | INFO | User {current_user}: Found address: {data['token_address']}")
-                    break
-            
-            # Market Cap and ATH
-            for line in lines:
-                if '💰' in line:
-                    if mc_match := re.search(r'MC:\s*\$([0-9,.]+)K\s*•\s*🔝\s*\$([0-9,.]+)([KM])', line):
-                        data['market_cap'] = float(mc_match.group(1).replace(',', '')) * 1000
-                        multiplier = 1000000 if mc_match.group(3) == 'M' else 1000
-                        data['ath_market_cap'] = float(mc_match.group(2).replace(',', '')) * multiplier
-                        logger.info(f"{current_time} UTC | INFO | User {current_user}: Found market cap: ${data['market_cap']}, ATH: ${data['ath_market_cap']}")
-                    break
-            
-            # Liquidity and SOL pooled
-            for line in lines:
-                if '💧' in line:
-                    if liq_match := re.search(r'Liq:\s*\$([0-9,.]+)K\s*\(([0-9,.]+)\s*SOL\)', line):
-                        data['liquidity'] = float(liq_match.group(1).replace(',', '')) * 1000
-                        data['sol_pooled'] = float(liq_match.group(2))
-                        logger.info(f"{current_time} UTC | INFO | User {current_user}: Found liquidity: ${data['liquidity']}, SOL pooled: {data['sol_pooled']}")
-                    break
-            
-            # Volume (24h)
-            for line in lines:
-                if 'Vol:' in line and '1d:' in line:
-                    if vol_match := re.search(r'1d:\s*\$([0-9,.]+)([KM])', line):
-                        amount = float(vol_match.group(1).replace(',', ''))
-                        multiplier = 1000000 if vol_match.group(2) == 'M' else 1000
-                        data['volume_24h'] = amount * multiplier
-                        logger.info(f"{current_time} UTC | INFO | User {current_user}: Found 24h volume: ${data['volume_24h']}")
-                    break
-            
-            # Price Change (24h)
-            for line in lines:
-                if 'Price:' in line and '1d:' in line:
-                    if price_match := re.search(r'1d:\s*([-+]?[0-9.]+)%', line):
-                        data['price_change_24h'] = float(price_match.group(1))
-                        logger.info(f"{current_time} UTC | INFO | User {current_user}: Found 24h price change: {data['price_change_24h']}%")
-                    break
-            
-            # Age
-            for line in lines:
-                if '🕒' in line:
-                    if age_match := re.search(r'Age:\s*(\d+)(m|h|d)', line):
-                        amount = float(age_match.group(1))
-                        unit = age_match.group(2)
-                        # Convert to hours
-                        data['age'] = amount / 60 if unit == 'm' else amount if unit == 'h' else amount * 24
-                        logger.info(f"{current_time} UTC | INFO | User {current_user}: Found age: {data['age']} hours")
-                    break
-            
-            # Holders and Top Holder
-            for line in lines:
-                if 'Hodls' in line:
-                    if holders_match := re.search(r'Hodls.*?:\s*([0-9,]+)\s*•\s*Top:\s*([0-9.]+)%', line):
-                        data['holders_count'] = int(holders_match.group(1).replace(',', ''))
-                        data['top_holder'] = float(holders_match.group(2))
-                        logger.info(f"{current_time} UTC | INFO | User {current_user}: Found holders: {data['holders_count']}, top holder: {data['top_holder']}%")
-                    break
-            
-            # LP Status
-            data['lp_burnt'] = 100.0 if "100% Burnt" in text else 99.0 if "99% Burnt" in text else 0.0
-            logger.info(f"{current_time} UTC | INFO | User {current_user}: Found LP burnt: {data['lp_burnt']}%")
-            
-            # Mint and Freeze Status
-            if 'Mint' in text:
-                mint_section = text.split('Mint')[1].split('|')[0]
-                data['mint_enabled'] = '🔴' in mint_section
-                logger.info(f"{current_time} UTC | INFO | User {current_user}: Mint enabled: {data['mint_enabled']}")
-            
-            if 'Freeze' in text:
-                freeze_section = text.split('Freeze')[1].split('\n')[0]
-                data['freeze_enabled'] = '🔴' in freeze_section
-                logger.info(f"{current_time} UTC | INFO | User {current_user}: Freeze enabled: {data['freeze_enabled']}")
-            
-            # Dev info
-            if dev_match := re.search(r'Dev.*?:\s*(\d+)\s*SOL\s*\|\s*(\d+)%.*?\nSniped:\s*(\d+)%.*?\nAirdrop:\s*(\d+)%', text, re.DOTALL):
-                data['dev_sol_balance'] = float(dev_match.group(1))
-                data['dev_token_percentage'] = float(dev_match.group(2))
-                data['dev_sniped_percentage'] = float(dev_match.group(3))
-                data['dev_airdrop_percentage'] = float(dev_match.group(4))
-                logger.info(f"{current_time} UTC | INFO | User {current_user}: Found dev info - SOL: {data['dev_sol_balance']}, Token %: {data['dev_token_percentage']}%")
-            
-            # Snipers info
-            if sniper_match := re.search(r'🔫\s*Snipers:\s*(\d+)\s*•\s*([0-9.]+)%', text):
-                data['sniper_count'] = int(sniper_match.group(1))
-                data['sniper_percentage'] = float(sniper_match.group(2))
-                logger.info(f"{current_time} UTC | INFO | User {current_user}: Found snipers: {data['sniper_count']}, {data['sniper_percentage']}%")
-            
-            # First 20 info
-            if first20_match := re.search(r'First 20.*?:\s*(\d+)\s*Fresh', text):
-                data['first_20_fresh'] = int(first20_match.group(1))
-                logger.info(f"{current_time} UTC | INFO | User {current_user}: Found fresh wallets: {data['first_20_fresh']}/20")
-            
-            # Social links
-            if 'X (' in text:
-                if twitter_match := re.search(r'X \((https://[^)]+)\)', text):
-                    data['twitter_url'] = twitter_match.group(1)
-                    logger.info(f"{current_time} UTC | INFO | User {current_user}: Found Twitter URL: {data['twitter_url']}")
-            
-            if 'WEB (' in text:
-                if web_match := re.search(r'WEB \((https://[^)]+)\)', text):
-                    data['website_url'] = web_match.group(1)
-                    logger.info(f"{current_time} UTC | INFO | User {current_user}: Found Website URL: {data['website_url']}")
-            
-            # Warning flags
-            data['warnings'] = []
-            
-            if 'High Holder' in text:
-                data['warnings'].append('high_holder')
-            if 'Dev Sniped' in text:
-                data['warnings'].append('dev_sniped')
-            if 'Abnormal Vol' in text:
-                data['warnings'].append('abnormal_volume')
-            if 'High Top Ten' in text:
-                data['warnings'].append('high_top_ten')
-            
-            logger.info(f"{current_time} UTC | INFO | User {current_user}: Found {len(data['warnings'])} warnings: {data['warnings']}")
-            
-            # Final logging
-            logger.info(f"{current_time} UTC | INFO | User {current_user}: Parsing completed. Fields parsed: {len(data)}")
-            logger.info(f"{current_time} UTC | INFO | User {current_user}: Parsed fields: {list(data.keys())}")
+                try:
+                    if not line.strip():
+                        continue
+                        
+                    clean_line = self.clean_line(line)
+                    
+                    # Basic info 
+                    if '💠' in line:
+                        parts = line.split('$')
+                        data['name'] = parts[0].replace('💠', '').replace('•', '').replace('**', '').strip()
+                        data['symbol'] = parts[1].replace('**', '').strip()
+                    
+                    # Contract Address
+                    elif len(line.strip()) > 30 and not any(x in line for x in ['https://', '🌊', '🔫', '📈', '🔗', '•', '┗', '┣']):
+                        data['contract_address'] = line.strip().replace('`', '')
+                    
+                    
+                    elif 'Age:' in line:
+                        try:
+                            number = ''.join(c for c in line if c.isdigit())
+                            if number:
+                                if 'm' in line:  # Jei yra "m"
+                                    data['age'] = f"{number}m"  # Pridedame "m"
+                                elif 'd' in line:  # Jei "d"
+                                    data['age'] = f"{number}d"  # Pridedame "d"
+                                elif 'h' in line:  # Jei "h"
+                                    data['age'] = f"{number}h"  # Pridedame "h"
+                        except Exception as e:
+                            print(f"AGE ERROR: {str(e)}")
+                        
+                    # Market Cap and ATH
+                    elif 'MC:' in line:
+                        mc = re.search(r'\$(\d+\.?\d*)K', clean_line)
+                        ath = re.search(r'\$(\d+\.?\d*)M', clean_line)
+                        if mc:
+                            data['market_cap'] = float(mc.group(1)) * 1000
+                        if ath:
+                            data['ath_market_cap'] = float(ath.group(1)) * 1000000
+                    
+                    # Liquidity
+                    elif 'Liq:' in line:
+                        liq = re.search(r'\$(\d+\.?\d*)K\s*\((\d+)\s*SOL\)', clean_line)
+                        if liq:
+                            data['liquidity'] = {
+                                'usd': float(liq.group(1)) * 1000,
+                                'sol': float(liq.group(2))
+                            }
+                    
+                    # Volume
+                    elif 'Vol:' in line:
+                        print(f"DEBUG VOL LINE: {line}")  # Debug
+                        print(f"DEBUG CLEAN VOL LINE: {clean_line}")  # Debug
+                        try:
+                            # 1h volume - ieškome $X.XM arba $X.XK
+                            vol_1h = re.search(r'\$(\d+\.?\d*)[MK]', line)
+                            if vol_1h:
+                                value = float(vol_1h.group(1))
+                                if 'M' in vol_1h.group(0):
+                                    value *= 1000000  # Jei M, dauginam iš milijono
+                                elif 'K' in vol_1h.group(0):
+                                    value *= 1000    # Jei K, dauginam iš tūkstančio
+                                data['volume'] = {'1h': value}
+                                print(f"DEBUG VOL 1H: {value}")  # Debug
+                                
+                            # 24h volume (jei yra)
+                            if '|' in line:
+                                vol_24h = re.search(r'\|\s*\$(\d+\.?\d*)[MK]', line)
+                                if vol_24h:
+                                    value = float(vol_24h.group(1))
+                                    if 'M' in vol_24h.group(0):
+                                        value *= 1000000
+                                    elif 'K' in vol_24h.group(0):
+                                        value *= 1000
+                                    data['volume']['24h'] = value
+                                    print(f"DEBUG VOL 24H: {value}")  # Debug
+                        except Exception as e:
+                            print(f"Volume error: {str(e)}")
+                    
+                    # Price Changes
+                    elif 'Price:' in line:
+                        print(f"DEBUG PRICE LINE: {line}")  # Debug
+                        try:
+                            parts = line.split('|')
+                            # 1h price - ieškome skaičiaus prieš %
+                            price_1h = re.search(r'([\d.]+)K?%', parts[0])
+                            if price_1h:
+                                value = float(price_1h.group(1))
+                                if 'K' in price_1h.group(0):
+                                    value *= 1000
+                                data['price_change'] = {'1h': value}
+                                
+                            # 24h price (jei yra)
+                            if len(parts) > 1:
+                                price_24h = re.search(r'([\d.]+)K?%', parts[1])
+                                if price_24h:
+                                    value = float(price_24h.group(1))
+                                    if 'K' in price_24h.group(0):
+                                        value *= 1000
+                                    data['price_change']['24h'] = value
+                        except Exception as e:
+                            print(f"Price error: {str(e)}")
+                    
+                    # Tikriname visą eilutę su Mint ir Freeze
+                    elif '➕ Mint' in line and '🧊 Freeze' in line:
+                        mint_part = line.split('|')[0]
+                        freeze_part = line.split('|')[1]
+                        data['mint_status'] = False if '🤍' in mint_part else True
+                        data['freeze_status'] = False if '🤍' in freeze_part else True
+
+                    # LP statusas - GRĮŽTAM PRIE TO KAS VEIKĖ
+                    elif 'LP' in line and not 'First' in line:
+                        data['lp_status'] = True if '🤍' in line else False
+
+                        
+                    # DEX Status
+                    elif 'Dex' in line:
+                        data['dex_status'] = {
+                            'paid': '✅' in line,
+                            'ads': not '❌' in line
+                        }
+                    
+                    # Scans
+                    elif any(emoji in line for emoji in ['⚡', '⚡️']) and 'Scans:' in line:  # Patikriname abu variantus
+                        print(f"DEBUG SCANS LINE: {line}")  # Debug
+                        try:
+                            # Pašalinam Markdown formatavimą ir ieškome skaičiaus
+                            clean_line = re.sub(r'\*\*', '', line)
+                            scans_match = re.search(r'Scans:\s*(\d+)', clean_line)
+                            if scans_match:
+                                scan_count = int(scans_match.group(1))
+                                data['total_scans'] = scan_count
+                                print(f"DEBUG SCANS COUNT: {scan_count}")  # Debug
+                                
+                            # Social links jau veikia teisingai, paliekame kaip yra
+                            social_links = {}
+                            if 'X' in line:
+                                x_match = re.search(r'X\]\((https://[^)]+)\)', line)
+                                if x_match:
+                                    social_links['X'] = x_match.group(1)
+                            
+                            if 'WEB' in line:
+                                web_match = re.search(r'WEB\]\((https://[^)]+)\)', line)
+                                if web_match:
+                                    social_links['WEB'] = web_match.group(1)
+                            
+                            if social_links:
+                                data['social_links'] = social_links
+                                print(f"DEBUG SOCIALS: {social_links}")  # Debug
+                                
+                        except Exception as e:
+                            print(f"Scans error: {str(e)}")  # Debug printinam klaidas
+                    
+                    # Holders
+                    elif 'Hodls' in line:
+                        print(f"DEBUG HODLS LINE: {line}")  # Debug
+                        try:
+                            # Ieškome skaičių su kableliais ir procentų
+                            holders = re.search(r':\s*([0-9,]+)\s*•\s*Top:\s*([\d.]+)%', line)
+                            if holders:
+                                # Pašalinam kablelį iš holder count
+                                holder_count = int(holders.group(1).replace(',', ''))
+                                top_percent = float(holders.group(2))
+                                data['holders'] = {
+                                    'count': holder_count,
+                                    'top_percentage': top_percent
+                                }
+                                print(f"DEBUG HOLDERS: {holder_count}, TOP: {top_percent}%")  # Debug
+                        except Exception as e:
+                            print(f"Holders error: {str(e)}")
+        
+                    # Snipers
+                    elif '🔫' in line and 'Snipers:' in line:
+                        print(f"DEBUG SNIPERS LINE: {line}")  # Debug
+                        clean_line = re.sub(r'\*\*', '', line)  # Pašalinam Markdown
+                        try:
+                            # Ieškome tik skaičių ir procento, ignoruojam ⚠️
+                            snipers_match = re.search(r'Snipers:\s*(\d+)\s*•\s*([\d.]+)%', clean_line)
+                            if snipers_match:
+                                data['snipers'] = {
+                                    'count': int(snipers_match.group(1)),
+                                    'percentage': float(snipers_match.group(2))
+                                }
+                                print(f"DEBUG SNIPERS: count={data['snipers']['count']}, percentage={data['snipers']['percentage']}%")  # Debug
+                        except Exception as e:
+                            print(f"Snipers error: {str(e)}")
+                    
+                    # First 20
+                    elif 'First 20' in line:
+                        fresh = re.search(r':\s*(\d+)\s*Fresh', clean_line)
+                        if fresh:
+                            data['first_20'] = int(fresh.group(1))
+                    
+                    # Sniper Wallets
+                    elif any(emoji in line for emoji in ['🐟', '🍤', '🐳', '🌱']):
+                        if 'sniper_wallets' not in data:
+                            data['sniper_wallets'] = []
+                        
+                        matches = re.finditer(r'(🐟|🍤|🐳|🌱).*?solscan\.io/account/([A-Za-z0-9]+)', line)
+                        for match in matches:
+                            data['sniper_wallets'].append({
+                                'type': match.group(1),
+                                'address': match.group(2)
+                            })
+                    
+                    # Dev Info
+                    elif '🛠️ Dev' in line:
+                        print(f"DEBUG DEV LINE: {line}")  # Debug
+                        try:
+                            if 'dev' not in data:
+                                data['dev'] = {}
+                            
+                            # Pašalinam Markdown formatavimą
+                            clean_line = re.sub(r'\*\*|\[|\]|\(.*?\)', '', line)
+                            print(f"DEBUG CLEAN DEV LINE: {clean_line}")  # Debug
+                            
+                            # Ieškome SOL ir procento bei token symbol
+                            dev_match = re.search(r'Dev:\s*(\d+)\s*SOL\s*\|\s*(\d+)%\s*\$(\w+)', clean_line)
+                            if dev_match:
+                                data['dev'].update({
+                                    'sol_balance': float(dev_match.group(1)),
+                                    'token_percentage': float(dev_match.group(2)),
+                                    'token_symbol': dev_match.group(3)
+                                })
+                                print(f"DEBUG DEV INFO: SOL={data['dev']['sol_balance']}, Token %={data['dev']['token_percentage']}, Symbol={data['dev']['token_symbol']}")  # Debug
+                        except Exception as e:
+                            print(f"Dev info error: {str(e)}")
+
+                    # Sniped ir Sold (nekeičiame, nes veikia)
+                    elif 'Sniped:' in line:
+                        sniped = re.search(r'Sniped:\s*([\d.]+)%', clean_line)
+                        sold = re.search(r'Sold:\s*([\d.]+)%', clean_line)
+                        if sniped and sold:
+                            if 'dev' not in data:
+                                data['dev'] = {}
+                            data['dev']['sniped_percentage'] = float(sniped.group(1))
+                            data['dev']['sold_percentage'] = float(sold.group(1))
+
+                    # Airdrop (nekeičiame, nes veikia)
+                    elif 'Airdrop:' in line:
+                        airdrop = re.search(r'Airdrop:\s*(\d+)%', clean_line)
+                        if airdrop:
+                            if 'dev' not in data:
+                                data['dev'] = {}
+                            data['dev']['airdrop_percentage'] = float(airdrop.group(1))
+
+                    # Made, Bond, Best (nekeičiame, nes veikia)
+                    elif 'Made:' in line:
+                        made = re.search(r'Made:\s*(\d+)', line)
+                        bond = re.search(r'Bond:\s*(\d+)', line)
+                        best = re.search(r'Best:\s*\$(\d+\.?\d*)M', line)
+                        if made and bond and best:
+                            if 'dev' not in data:
+                                data['dev'] = {}
+                            data['dev'].update({
+                                'tokens_made': int(made.group(1)),
+                                'bonds': int(bond.group(1)),
+                                'best_mc': float(best.group(1)) * 1000000
+                            })
+                except Exception as e:
+                    self.logger.warning(f"Error parsing line: {str(e)}")
+                    continue
             
             return data
-            
+
         except Exception as e:
-            logger.error(f"{current_time} UTC | ERROR | User {current_user}: Error parsing Soul Scanner response: {str(e)}")
-            logger.error(f"{current_time} UTC | ERROR | User {current_user}: Error location: {e.__traceback__.tb_lineno}")
-            logger.error(f"{current_time} UTC | ERROR | User {current_user}: Raw text that caused error:\n{text}")
+            self.logger.error(f"Error parsing message: {str(e)}")
             return {}
                     
 
