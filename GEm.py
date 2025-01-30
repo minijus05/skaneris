@@ -253,7 +253,7 @@ class TokenMetrics:
     age: str
     
     # Price metrics (required fields)
-    
+    price: float
     market_cap: float
     liquidity: float
     volume_1h: float
@@ -1752,7 +1752,7 @@ class GemFinder:
                                 name=soul_data.get('name', 'Unknown').replace('**', '').replace('\u200e', ''),
                                 symbol=soul_data.get('symbol', 'Unknown'),
                                 age=soul_data.get('age', '0d'),
-                                
+                                price=gmgn_data.get('price', 0.0),  
                                 market_cap=soul_data.get('market_cap', 0.0),
                                 liquidity=soul_data.get('liquidity', {}).get('usd', 0.0),
                                 volume_1h=soul_data.get('volume', {}).get('1h', 0.0),
