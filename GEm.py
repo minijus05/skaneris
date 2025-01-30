@@ -253,32 +253,44 @@ class TokenMetrics:
     age: str
     
     # Price metrics (required fields)
-    price: float
+    
     market_cap: float
-    liquidity: Dict[str, float]  # {'usd': float, 'sol': float}
-    volume: Dict[str, float]  # {'1h': float, '24h': float}
-    price_change: Dict[str, float]  # {'1h': float, '24h': float}
+    liquidity: float
+    volume_1h: float
+    volume_24h: float
+    price_change_1h: float
+    price_change_24h: float
     
     # Security metrics (required fields)
-    mint_status: bool
-    freeze_status: bool
-    lp_status: bool
+    mint_enabled: bool
+    freeze_enabled: bool
+    lp_burnt_percentage: float
     
     # Holder metrics (required fields)
-    holders: Dict[str, Union[int, float]]  # {'count': int, 'top_percentage': float}
-    sniper_wallets: List[Dict[str, str]]  # [{'type': str, 'address': str}]
+    holders_count: int
+    top_holder_percentage: float
+    top_10_percentage: float
+    sniper_count: int
+    sniper_percentage: float
     
-    # Dev info
-    dev: Dict[str, Union[float, str, int]]
+    # Trading metrics
+    first_20_fresh: int
+    first_70_status: Dict[str, float]
     
-    # Social info (required fields)
-    social_links: Dict[str, str]  # {'X': str, 'WEB': str}
-    total_scans: int
+    # Performance metrics
+    ath_market_cap: float
+    ath_multiplier: float
     
-    # Optional fields (with default values)
-    ath_market_cap: float = 0.0
-    first_20: int = 0
-    first_70_status: Dict[str, float] = field(default_factory=lambda: {'current': 0.0, 'initial': 0.0})
+    # Ownership info
+    owner_renounced: bool
+    dev_wallet: Optional[str]
+    dev_sol_balance: float
+    dev_token_percentage: float
+    
+    # Social links
+    telegram_url: Optional[str]
+    twitter_url: Optional[str]
+    website_url: Optional[str]
 
 class GemScorer:
     def __init__(self):
@@ -1734,12 +1746,13 @@ class GemFinder:
                             logger.info(f"{current_time} UTC | INFO | User {current_user}: Both responses received and parsed")
                             
                             # Konstruojame TokenMetrics objektą
+                            # Konstruojame TokenMetrics objektą
                             token_data = TokenMetrics(
                                 address=token_address,
                                 name=soul_data.get('name', 'Unknown').replace('**', '').replace('\u200e', ''),
                                 symbol=soul_data.get('symbol', 'Unknown'),
-                                age=soul_data.get('age', '0d'), 
-                                price=gmgn_data.get('price', 0.0),
+                                age=soul_data.get('age', '0d'),
+                                
                                 market_cap=soul_data.get('market_cap', 0.0),
                                 liquidity=soul_data.get('liquidity', {}).get('usd', 0.0),
                                 volume_1h=soul_data.get('volume', {}).get('1h', 0.0),
@@ -1751,7 +1764,7 @@ class GemFinder:
                                 lp_burnt_percentage=100 if soul_data.get('lp_status', False) else 0,
                                 holders_count=soul_data.get('holders', {}).get('count', 0),
                                 top_holder_percentage=soul_data.get('holders', {}).get('top_percentage', 0.0),
-                                top_10_percentage=gmgn_data.get('top_10_percentage', 0.0),
+                                top_10_percentage=gmgn_data.get('top_10_percentage', 0.0),  # Iš GMGN duomenų
                                 sniper_count=soul_data.get('snipers', {}).get('count', 0),
                                 sniper_percentage=soul_data.get('snipers', {}).get('percentage', 0.0),
                                 first_20_fresh=soul_data.get('first_20', 0),
@@ -1759,10 +1772,10 @@ class GemFinder:
                                 ath_market_cap=soul_data.get('ath_market_cap', 0.0),
                                 ath_multiplier=1.0,
                                 owner_renounced=soul_data.get('dev', {}).get('token_percentage', 0.0) == 0,
-                                telegram_url=soul_data.get('social_links', {}).get('TG'),
-                                twitter_url=soul_data.get('social_links', {}).get('X'),
-                                website_url=soul_data.get('social_links', {}).get('WEB'),
-                                dev_wallet=None,  # Dev wallet info yra dev objekto viduje
+                                telegram_url=soul_data.get('social_links', {}).get('TG') or gmgn_data.get('telegram_url'),
+                                twitter_url=soul_data.get('social_links', {}).get('X') or gmgn_data.get('twitter_url'),
+                                website_url=soul_data.get('social_links', {}).get('WEB') or gmgn_data.get('website_url'),
+                                dev_wallet=None,
                                 dev_sol_balance=soul_data.get('dev', {}).get('sol_balance', 0.0),
                                 dev_token_percentage=soul_data.get('dev', {}).get('token_percentage', 0.0)
                             )
@@ -1793,59 +1806,13 @@ class GemFinder:
             logger.error(f"Exception traceback: {e.__traceback__.tb_lineno}")
             return None
 
-    def combine_data(self, soul_data: Dict, gmgn_data: Dict, token_address: str) -> TokenMetrics:
-        """Sujungia duomenis iš Soul Scanner ir GMGN į vieną TokenMetrics objektą"""
-        try:
-            logger.info(f"2025-01-30 15:47:18 UTC | INFO | User minijus05: Combining data from both scanners")
-            
-            # Sukuriame TokenMetrics objektą
-            metrics = TokenMetrics(
-                address=token_address,
-                name=soul_data.get('name', 'Unknown').replace('**', '').replace('\u200e', ''),
-                symbol=soul_data.get('symbol', 'Unknown'),
-                age=soul_data.get('age', '0d'), 
-                price=gmgn_data.get('price', 0.0),
-                market_cap=soul_data.get('market_cap', 0.0),
-                liquidity=soul_data.get('liquidity', {}).get('usd', 0.0),
-                volume_1h=soul_data.get('volume', {}).get('1h', 0.0),
-                volume_24h=soul_data.get('volume', {}).get('24h', 0.0),
-                price_change_1h=soul_data.get('price_change', {}).get('1h', 0.0),
-                price_change_24h=soul_data.get('price_change', {}).get('24h', 0.0),
-                mint_enabled=soul_data.get('mint_status', False),
-                freeze_enabled=soul_data.get('freeze_status', False),
-                lp_burnt_percentage=100 if soul_data.get('lp_status', False) else 0,
-                holders_count=soul_data.get('holders', {}).get('count', 0),
-                top_holder_percentage=soul_data.get('holders', {}).get('top_percentage', 0.0),
-                top_10_percentage=gmgn_data.get('top_10_percentage', 0.0),
-                sniper_count=soul_data.get('snipers', {}).get('count', 0),
-                sniper_percentage=soul_data.get('snipers', {}).get('percentage', 0.0),
-                first_20_fresh=soul_data.get('first_20', 0),
-                first_70_status=gmgn_data.get('first_70_status', {'current': 0, 'initial': 0}),
-                ath_market_cap=soul_data.get('ath_market_cap', 0.0),
-                ath_multiplier=1.0,
-                owner_renounced=soul_data.get('dev', {}).get('token_percentage', 0.0) == 0,
-                telegram_url=soul_data.get('social_links', {}).get('TG'),
-                twitter_url=soul_data.get('social_links', {}).get('X'),
-                website_url=soul_data.get('social_links', {}).get('WEB'),
-                dev_wallet=None,
-                dev_sol_balance=soul_data.get('dev', {}).get('sol_balance', 0.0),
-                dev_token_percentage=soul_data.get('dev', {}).get('token_percentage', 0.0)
-            )
-            
-            # Apskaičiuojame ATH multiplier
-            if metrics.market_cap > 0 and metrics.ath_market_cap > 0:
-                metrics.ath_multiplier = metrics.ath_market_cap / metrics.market_cap
-                
-            logger.info(f"2025-01-30 15:47:18 UTC | INFO | User minijus05: Combined TokenMetrics Data:")
-            for field in fields(metrics):
-                value = getattr(metrics, field.name)
-                logger.info(f"2025-01-30 15:47:18 UTC | INFO | User minijus05: {field.name}: {value}")
+    
             
             return metrics
                 
-        except Exception as e:
-            logger.error(f"2025-01-30 15:47:18 UTC | ERROR | User minijus05: Error combining data: {e}")
-            raise
+        
+            
+            
 
     
     async def _get_soul_scanner_data(self, original_message) -> Optional[Dict]:
@@ -2272,6 +2239,7 @@ class GemFinder:
             return {}
                     
 
+    
     def parse_gmgn_response(self, text: str) -> Dict:
         """GMGN boto atsakymo parsinimas"""
         try:
@@ -2287,12 +2255,8 @@ class GemFinder:
                 data['liquidity'] = float(match.group(1)) * 1000
                 data['sol_pooled'] = float(match.group(2))
                 
-            # Price su specialiu formatu $0.0{4}41908
-            if match := re.search(r'Price:\s*\*{0,2}\$0\.0{(\d+)}(\d+)\*{0,2}', text):
-                zeros = int(match.group(1))
-                num = match.group(2)
-                data['price'] = float(f"0.{'0' * zeros}{num}")
             
+                        
             # Dev info
             if match := re.search(r'Dev current balance:\s*\*{0,2}([0-9.]+)%\*{0,2}', text):
                 data['dev_percentage'] = float(match.group(1))
@@ -2310,7 +2274,7 @@ class GemFinder:
                     'initial': float(match.group(2))
                 }
                 
-            # Social links - saugus patikrinimas
+            # Social links - originalus kodas
             twitter_match = re.search(r'\[Twitter✅\]\(([^)]+)\)', text)
             if twitter_match:
                 data['twitter_url'] = twitter_match.group(1)
@@ -2329,7 +2293,6 @@ class GemFinder:
         except Exception as e:
             logger.error(f"[2025-01-29 21:17:19] User minijus05: GMGN parsing error: {e}")
             return {}
-
     
             
     async def _analyze_token(self, token: TokenMetrics) -> Dict:
