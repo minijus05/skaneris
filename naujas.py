@@ -472,14 +472,38 @@ class MLAnalyzer:
             logger.error(f"[2025-01-31 13:30:42] Error loading historical data: {e}")
         
     async def train_model(self):
-        """Treniruoja modelį naudojant TIK pradinius sėkmingų tokenų duomenis"""
+        """Treniruoja modelį naudojant sėkmingus ir nepavykusius tokenus"""
         try:
+            # Gauname tokenus
             successful_tokens = await self.db.get_all_gems()
-            training_data = [await self.db.get_initial_state(token['address']) 
-                           for token in successful_tokens]
-            X = self._convert_to_features(training_data)
-            self.model = self._train_new_model(X)
-            logger.info(f"[{datetime.now(timezone.utc)}] Model trained with {len(training_data)} samples")
+            failed_tokens = await self.db.get_failed_tokens()
+            
+            logger.info(f"[{datetime.now(timezone.utc)}] Training model with {len(successful_tokens)} successful and {len(failed_tokens)} failed tokens")
+            
+            # Konvertuojame į features
+            X_success = self._convert_to_features([await self.db.get_initial_state(t['address']) for t in successful_tokens])
+            X_failed = self._convert_to_features([await self.db.get_initial_state(t['address']) for t in failed_tokens])
+            
+            if len(X_success) == 0 or len(X_failed) == 0:
+                logger.warning("Not enough data for training")
+                return
+            
+            # Sujungiame features ir labels
+            X = np.vstack([X_success, X_failed])
+            y = np.hstack([np.ones(len(X_success)), np.zeros(len(X_failed))])
+            
+            # Treniruojame modelį
+            self.model = RandomForestClassifier(
+                n_estimators=100,
+                max_depth=5,
+                min_samples_split=4,
+                min_samples_leaf=2,
+                random_state=42
+            )
+            self.model.fit(X, y)
+            
+            logger.info(f"[{datetime.now(timezone.utc)}] Model trained successfully")
+            
         except Exception as e:
             logger.error(f"[{datetime.now(timezone.utc)}] Error training model: {e}")
         
@@ -1012,6 +1036,64 @@ class DatabaseManager:
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
 
+        # Pridedame failed_tokens lentelę
+        await self.db.execute("""
+            CREATE TABLE IF NOT EXISTS failed_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                address TEXT NOT NULL UNIQUE,
+                initial_parameters TEXT NOT NULL,
+                failure_reason TEXT,
+                discovery_timestamp TIMESTAMP,
+                FOREIGN KEY(address) REFERENCES token_initial_states(address)
+            )
+        """)
+        
+    async def get_failed_tokens(self):
+        """Gauna visus nepavykusius tokenus"""
+        try:
+            query = """
+            SELECT * FROM failed_tokens
+            ORDER BY discovery_timestamp DESC
+            """
+            results = await self.db.fetch_all(query)
+            logger.info(f"[{datetime.now(timezone.utc)}] Found {len(results) if results else 0} failed tokens")
+            return results
+        except Exception as e:
+            logger.error(f"[{datetime.now(timezone.utc)}] Error getting failed tokens: {e}")
+            return []
+            
+    async def mark_as_failed(self, token_address: str, reason: str):
+        """Pažymi token'ą kaip nepavykusį"""
+        try:
+            # 1. Gauname pradinę būseną
+            initial_data = await self.get_initial_state(token_address)
+            if not initial_data:
+                return
+                
+            # 2. Atnaujiname statusą
+            await self.db.execute(
+                "UPDATE token_initial_states SET status = 'failed' WHERE address = ?",
+                token_address
+            )
+            
+            # 3. Įrašome į failed_tokens
+            query = """
+            INSERT INTO failed_tokens (
+                address, initial_parameters, failure_reason, discovery_timestamp
+            ) VALUES (?, ?, ?, ?)
+            """
+            await self.db.execute(query, (
+                token_address,
+                json.dumps(initial_data.to_dict()),
+                reason,
+                datetime.now(timezone.utc)
+            ))
+            
+            logger.info(f"[{datetime.now(timezone.utc)}] Token marked as failed: {token_address} - {reason}")
+            
+        except Exception as e:
+            logger.error(f"[{datetime.now(timezone.utc)}] Error marking token as failed: {e}")
+
 class TokenAnalytics:
     def __init__(self, db_manager):
         self.db = db_manager
@@ -1054,51 +1136,7 @@ class TokenAnalytics:
             'avg_lp_burnt': sum(g.lp_burnt_percentage for g in gems) / len(gems)
         }
 
-class TokenMonitor:
-    def __init__(self, db_manager, ml_analyzer, token_handler):
-        self.db = db_manager
-        self.ml = ml_analyzer
-        self.handler = token_handler
-        self.monitoring_tokens = set()
-        
-    async def start_monitoring(self):
-        """Pradeda token'ų stebėjimą"""
-        while True:
-            try:
-                # 1. Gauna visus stebimus tokenus
-                active_tokens = await self.db.get_active_tokens()
-                
-                for token in active_tokens:
-                    # 2. Gauna naujausius duomenis
-                    current_data = await self._fetch_current_data(token.address)
-                    
-                    # 3. Apdoroja atnaujinimą
-                    await self.handler.handle_token_update(token.address, current_data)
-                    
-                    # 4. Tikrina ar tapo "gem"
-                    initial_data = await self.db.get_initial_state(token.address)
-                    multiplier = current_data.market_cap / initial_data.market_cap
-                    
-                    if multiplier >= 10:
-                        await self._handle_new_gem(token.address, initial_data, current_data)
-                
-                await asyncio.sleep(60)  # Tikrina kas minutę
-                
-            except Exception as e:
-                logger.error(f"Monitoring error: {e}")
-                await asyncio.sleep(10)
-                
-    async def _handle_new_gem(self, address, initial_data, current_data):
-        """Apdoroja naują gem"""
-        await self.db.mark_as_gem(address)
-        await self.ml.update_model_with_new_gem(initial_data)
-        
-        success_pattern = {
-            'initial_state': initial_data.to_dict(),
-            'time_to_gem': (current_data.timestamp - initial_data.timestamp),
-            'final_multiplier': current_data.market_cap / initial_data.market_cap
-        }
-        await self.db.save_success_pattern(address, success_pattern)
+
 
 class TokenAnalyzer:
     def __init__(self, db_manager, ml_analyzer):
@@ -1738,6 +1776,8 @@ class GemFinder:
         
         # Atnaujiname token_analyzer su teisingu ml_analyzer
         self.token_analyzer.ml = self.ml_analyzer
+
+        self.token_handler = TokenHandler(self.db_manager, self.ml_analyzer)
 
         
         
