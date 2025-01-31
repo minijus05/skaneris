@@ -269,6 +269,39 @@ class TokenMetrics:
     telegram_url: Optional[str] = None
     twitter_url: Optional[str] = None
     website_url: Optional[str] = None
+
+    def to_dict(self) -> Dict:
+        """Konvertuoja objektą į žodyną"""
+        return {
+            'address': self.address,
+            'name': self.name,
+            'symbol': self.symbol,
+            'age': self.age,
+            'market_cap': self.market_cap,
+            'liquidity': self.liquidity,
+            'volume_1h': self.volume_1h,
+            'volume_24h': self.volume_24h,
+            'price_change_1h': self.price_change_1h,
+            'price_change_24h': self.price_change_24h,
+            'ath_market_cap': self.ath_market_cap,
+            'lp_burnt_percentage': self.lp_burnt_percentage,
+            'holders_count': self.holders_count,
+            'top_holder_percentage': self.top_holder_percentage,
+            'sniper_count': self.sniper_count,
+            'sniper_percentage': self.sniper_percentage,
+            'first_20_fresh': self.first_20_fresh,
+            'mint_enabled': self.mint_enabled,
+            'freeze_enabled': self.freeze_enabled,
+            'owner_renounced': self.owner_renounced,
+            'ath_multiplier': self.ath_multiplier,
+            'dev_wallet': self.dev_wallet,
+            'sniper_wallets': self.sniper_wallets,
+            'dev_sol_balance': self.dev_sol_balance,
+            'dev_token_percentage': self.dev_token_percentage,
+            'telegram_url': self.telegram_url,
+            'twitter_url': self.twitter_url,
+            'website_url': self.website_url
+        }
     
 @dataclass
 class TokenUpdate:
