@@ -433,12 +433,17 @@ class TokenHandler:
             logger.error(f"[2025-01-31 15:00:10] Error sending gem alert: {e}")
 
 class MLAnalyzer:
-    def __init__(self, db_manager):
+    def __init__(self, db_manager, token_analyzer=None):
         self.db = db_manager
+        self.token_analyzer = token_analyzer
         self.model = None
         self.historical_data = None
         self.telegram_client = None
         self.scaler = StandardScaler()
+        
+        # Jei token_analyzer neperduotas, sukuriame naują
+        if self.token_analyzer is None:
+            self.token_analyzer = TokenAnalyzer(db_manager, self)
         
     async def load_historical_data(self):
         """Užkrauna istorinius duomenis iš duomenų bazės"""
@@ -479,27 +484,71 @@ class MLAnalyzer:
             logger.error(f"[{datetime.now(timezone.utc)}] Error training model: {e}")
         
     def _convert_to_features(self, tokens_data: List[TokenMetrics]) -> np.array:
-        """Konvertuoja TokenMetrics į feature array"""
+        """Konvertuoja TokenMetrics į feature array naudojant TokenAnalyzer"""
         try:
             features = []
             for token in tokens_data:
+                # Gauname išanalizuotus features per TokenAnalyzer
+                analyzed = self.token_analyzer.prepare_features(token, [])  # Tuščias updates list, nes tai pradinis state
+                
+                # Konstruojame feature vektorių
                 feature_vector = [
-                    token.market_cap,
-                    token.liquidity,
-                    token.volume_1h,
+                    # 1. Basic metrics
+                    analyzed['basic_metrics']['age_hours'],
+                    analyzed['basic_metrics']['market_cap_normalized'],
+                    analyzed['basic_metrics']['liquidity_ratio'],
+                    
+                    # 2. Price/Volume metrics
+                    token.market_cap,  # Raw market cap
+                    token.liquidity,   # Raw liquidity
+                    token.volume_1h,   # Raw volume 1h
+                    token.volume_24h,  # Raw volume 24h
                     token.price_change_1h,
-                    token.holders_count,
-                    token.top_holder_percentage,
-                    token.sniper_count,
-                    token.mint_enabled,      # Jau yra 0/1
-                    token.freeze_enabled,    # Jau yra 0/1
-                    token.owner_renounced,   # Jau yra 0/1
-                    token.sniper_percentage,
-                    token.first_20_fresh,
-                    token.dev_token_percentage,
+                    token.price_change_24h,
+                    
+                    # 3. Holder metrics
+                    analyzed['holder_metrics']['holder_distribution'],
+                    analyzed['holder_metrics']['value_per_holder'],
+                    analyzed['holder_metrics']['top_holder_risk'],
+                    
+                    # 4. Sniper metrics
+                    analyzed['sniper_metrics']['sniper_impact'],
+                    analyzed['sniper_metrics']['whale_dominance'],
+                    analyzed['sniper_metrics']['fish_ratio'],
+                    analyzed['sniper_metrics']['sniper_diversity'],
+                    
+                    # 5. Dev metrics
+                    analyzed['dev_metrics']['dev_commitment'],
+                    analyzed['dev_metrics']['owner_risk'],
+                    analyzed['dev_metrics']['dev_sol_strength'],
+                    analyzed['dev_metrics']['dev_token_risk'],
+                    analyzed['dev_metrics']['ownership_score'],
+                    
+                    # 6. Security metrics
+                    analyzed['security_metrics']['contract_security'],
+                    analyzed['security_metrics']['lp_security'],
+                    analyzed['security_metrics']['mint_risk'],
+                    analyzed['security_metrics']['freeze_risk'],
+                    analyzed['security_metrics']['overall_security_score'],
+                    
+                    # 7. Social metrics
+                    analyzed['social_metrics']['social_presence'],
+                    analyzed['social_metrics']['has_twitter'],
+                    analyzed['social_metrics']['has_website'],
+                    analyzed['social_metrics']['has_telegram'],
+                    analyzed['social_metrics']['social_risk'],
+                    
+                    # 8. Risk metrics
+                    analyzed['risk_assessment']['overall_risk'],
+                    analyzed['risk_assessment']['pump_dump_risk'],
+                    analyzed['risk_assessment']['security_risk'],
+                    analyzed['risk_assessment']['holder_risk'],
+                    analyzed['risk_assessment']['dev_risk'],
+                    
+                    # 9. Contract flags
                     float(token.mint_enabled),
                     float(token.freeze_enabled),
-                    token.lp_burnt_percentage
+                    float(token.owner_renounced)
                 ]
                 features.append(feature_vector)
             
@@ -1178,7 +1227,494 @@ class TokenAnalyzer:
             'holder_risk': self._assess_holder_risk(token),
             'dev_risk': self._assess_dev_risk(token)
         }
-        
+    def _convert_age_to_hours(self, age: str) -> float:
+        """Konvertuoja amžių į valandas"""
+        try:
+            number = int(''.join(filter(str.isdigit, age)))
+            if 'm' in age:
+                return number / 60  # minutės į valandas
+            elif 'h' in age:
+                return number  # jau valandos
+            elif 'd' in age:
+                return number * 24  # dienos į valandas
+            return 0
+        except:
+            return 0
+
+    def _calculate_momentum(self, updates: List[TokenUpdate]) -> float:
+        """Skaičiuoja kainos momentum"""
+        if not updates:
+            return 0.0
+        try:
+            # Imame paskutines 5 atnaujinimus
+            recent = updates[-5:]
+            price_changes = [u.price_change_1h for u in recent]
+            return sum(price_changes) / len(price_changes)
+        except:
+            return 0.0
+
+    def _analyze_volume_trend(self, updates: List[TokenUpdate]) -> float:
+        """Analizuoja volume trendą"""
+        if not updates:
+            return 0.0
+        try:
+            volumes = [u.volume_1h for u in updates]
+            if len(volumes) < 2:
+                return 0.0
+            # Skaičiuojame volume pokytį
+            return (volumes[-1] - volumes[0]) / volumes[0] if volumes[0] > 0 else 0.0
+        except:
+            return 0.0
+
+    def _calculate_volatility(self, updates: List[TokenUpdate]) -> float:
+        """Skaičiuoja kainos volatility"""
+        if not updates:
+            return 0.0
+        try:
+            price_changes = [abs(u.price_change_1h) for u in updates]
+            return np.std(price_changes) if price_changes else 0.0
+        except:
+            return 0.0
+
+    def _analyze_volume_consistency(self, updates: List[TokenUpdate]) -> float:
+        """Analizuoja volume pastovumą"""
+        if not updates:
+            return 0.0
+        try:
+            volumes = [u.volume_1h for u in updates]
+            avg_volume = np.mean(volumes)
+            std_volume = np.std(volumes)
+            return std_volume / avg_volume if avg_volume > 0 else 0.0
+        except:
+            return 0.0
+
+    def _calculate_holder_growth(self, updates: List[TokenUpdate]) -> float:
+        """Skaičiuoja holder'ių augimą"""
+        if not updates:
+            return 0.0
+        try:
+            holders = [u.holders_count for u in updates]
+            if len(holders) < 2:
+                return 0.0
+            return (holders[-1] - holders[0]) / max(holders[0], 1)
+        except:
+            return 0.0
+
+    def _analyze_holder_distribution(self, token: TokenMetrics) -> float:
+        """Analizuoja holder'ių pasiskirstymą"""
+        try:
+            return 1.0 - (token.top_holder_percentage / 100.0)  # Kuo mažesnė koncentracija, tuo geriau
+        except:
+            return 0.0
+
+    def _calculate_holder_retention(self, updates: List[TokenUpdate]) -> float:
+        """Skaičiuoja holder'ių išlaikymą"""
+        if not updates:
+            return 0.0
+        try:
+            holder_counts = [u.holders_count for u in updates]
+            drops = sum(1 for i in range(1, len(holder_counts)) if holder_counts[i] < holder_counts[i-1])
+            return 1.0 - (drops / max(len(updates)-1, 1))
+        except:
+            return 0.0
+
+    def _categorize_snipers(self, wallets: List[Dict]) -> Dict:
+        """Kategorizuoja sniper'ius"""
+        result = {'whale_count': 0, 'fish_count': 0}
+        if not wallets:
+            return result
+        try:
+            for wallet in wallets:
+                if wallet['type'] in ['🐳']:  # Whale emoji
+                    result['whale_count'] += 1
+                elif wallet['type'] in ['🐟', '🍤']:  # Fish emoji
+                    result['fish_count'] += 1
+            return result
+        except:
+            return result
+
+    def _calculate_sniper_diversity(self, wallets: List[Dict]) -> float:
+        """Skaičiuoja sniper'ių įvairovę"""
+        if not wallets:
+            return 0.0
+        try:
+            types = [w['type'] for w in wallets]
+            unique_types = len(set(types))
+            return unique_types / len(wallets)
+        except:
+            return 0.0
+
+    def _analyze_sniper_patterns(self, wallets: List[Dict]) -> float:
+        """Analizuoja sniper'ių elgsenos šablonus"""
+        if not wallets:
+            return 0.0
+        try:
+            # Skaičiuojame whales/fish santykį
+            categories = self._categorize_snipers(wallets)
+            total = categories['whale_count'] + categories['fish_count']
+            if total == 0:
+                return 0.0
+            return categories['fish_count'] / total  # Didesnis fish ratio = geriau
+        except:
+            return 0.0
+
+    def _calculate_dev_commitment(self, token: TokenMetrics) -> float:
+        """Vertina dev commitment"""
+        try:
+            # Vertiname pagal SOL balansą ir token %
+            sol_score = min(token.dev_sol_balance / 100, 1.0)  # Normalizuojame iki 100 SOL
+            token_score = token.dev_token_percentage / 100
+            return (sol_score + token_score) / 2
+        except:
+            return 0.0
+
+    def _assess_owner_risk(self, token: TokenMetrics) -> float:
+        """Vertina owner riziką"""
+        try:
+            if token.owner_renounced:
+                return 0.0  # Mažiausia rizika
+            return token.dev_token_percentage / 100  # Rizika proporcinga dev token %
+        except:
+            return 1.0
+
+    def _normalize_sol_balance(self, balance: float) -> float:
+        """Normalizuoja SOL balansą"""
+        try:
+            return min(balance / 100, 1.0)  # Normalizuojame iki 100 SOL
+        except:
+            return 0.0
+
+    def _calculate_ownership_score(self, token: TokenMetrics) -> float:
+        """Skaičiuoja ownership score"""
+        try:
+            # Vertiname pagal kelis faktorius
+            renounced_score = 1.0 if token.owner_renounced else 0.0
+            dev_token_score = 1.0 - (token.dev_token_percentage / 100)
+            return (renounced_score + dev_token_score) / 2
+        except:
+            return 0.0
+
+    def _assess_contract_security(self, token: TokenMetrics) -> float:
+        """Vertina kontrakto saugumą"""
+        try:
+            # Skaičiuojame bendrą saugumo score
+            mint_score = 0.0 if token.mint_enabled else 1.0
+            freeze_score = 0.0 if token.freeze_enabled else 1.0
+            lp_score = token.lp_burnt_percentage / 100
+            return (mint_score + freeze_score + lp_score) / 3
+        except:
+            return 0.0
+
+    def _calculate_security_score(self, token: TokenMetrics) -> float:
+        """Skaičiuoja bendrą saugumo score"""
+        try:
+            contract_security = self._assess_contract_security(token)
+            ownership_security = self._calculate_ownership_score(token)
+            lp_security = token.lp_burnt_percentage / 100
+            return (contract_security + ownership_security + lp_security) / 3
+        except:
+            return 0.0
+
+    def _analyze_social_metrics(self, token: TokenMetrics) -> Dict:
+        """Analizuoja socialinius metrikus"""
+        try:
+            # Skaičiuojame social presence score
+            has_twitter = 1.0 if token.twitter_url else 0.0
+            has_website = 1.0 if token.website_url else 0.0
+            has_telegram = 1.0 if token.telegram_url else 0.0
+            
+            social_score = (has_twitter + has_website + has_telegram) / 3
+            
+            return {
+                'social_presence': social_score,
+                'has_twitter': has_twitter,
+                'has_website': has_website,
+                'has_telegram': has_telegram,
+                'social_risk': 1.0 - social_score
+            }
+        except:
+            return {
+                'social_presence': 0.0,
+                'has_twitter': 0.0,
+                'has_website': 0.0,
+                'has_telegram': 0.0,
+                'social_risk': 1.0
+            }
+
+    def _analyze_wallet_interactions(self, wallets: List[Dict]) -> Dict:
+        """Analizuoja wallet'ų tarpusavio sąveikas"""
+        try:
+            if not wallets:
+                return {'interaction_score': 0.0, 'interaction_pattern': 'none'}
+                
+            # Skaičiuojame wallet tipų pasiskirstymą
+            type_counts = {'🐳': 0, '🐟': 0, '🍤': 0, '🌱': 0}
+            for wallet in wallets:
+                if wallet['type'] in type_counts:
+                    type_counts[wallet['type']] += 1
+                    
+            total = sum(type_counts.values())
+            if total == 0:
+                return {'interaction_score': 0.0, 'interaction_pattern': 'none'}
+                
+            # Vertiname sąveikos šabloną
+            whale_ratio = type_counts['🐳'] / total if total > 0 else 0
+            fish_ratio = (type_counts['🐟'] + type_counts['🍤']) / total if total > 0 else 0
+            
+            # Nustatome sąveikos tipą
+            if whale_ratio > 0.5:
+                pattern = 'whale_dominated'
+                score = 0.3  # Rizikinga
+            elif fish_ratio > 0.7:
+                pattern = 'distributed'
+                score = 0.8  # Gerai
+            else:
+                pattern = 'mixed'
+                score = 0.5  # Neutralu
+                
+            return {
+                'interaction_score': score,
+                'interaction_pattern': pattern,
+                'whale_ratio': whale_ratio,
+                'fish_ratio': fish_ratio
+            }
+        except:
+            return {
+                'interaction_score': 0.0,
+                'interaction_pattern': 'error',
+                'whale_ratio': 0.0,
+                'fish_ratio': 0.0
+            }
+
+    def _calculate_price_trend(self, updates: List[TokenUpdate]) -> float:
+        """Skaičiuoja kainos trendą"""
+        if not updates:
+            return 0.0
+        try:
+            price_changes = [u.price_change_1h for u in updates]
+            return sum(price_changes) / len(price_changes)
+        except:
+            return 0.0
+
+    def _identify_volume_pattern(self, updates: List[TokenUpdate]) -> float:
+        """Identifikuoja volume šabloną"""
+        if not updates:
+            return 0.0
+        try:
+            volumes = [u.volume_1h for u in updates]
+            if len(volumes) < 3:
+                return 0.0
+            # Analizuojame volume trendą
+            increases = sum(1 for i in range(1, len(volumes)) if volumes[i] > volumes[i-1])
+            return increases / (len(volumes) - 1)
+        except:
+            return 0.0
+
+    def _analyze_holder_trend(self, updates: List[TokenUpdate]) -> float:
+        """Analizuoja holder'ių trendą"""
+        if not updates:
+            return 0.0
+        try:
+            holders = [u.holders_count for u in updates]
+            if len(holders) < 2:
+                return 0.0
+            return (holders[-1] - holders[0]) / max(holders[0], 1)
+        except:
+            return 0.0
+
+    def _calculate_growth_stability(self, updates: List[TokenUpdate]) -> float:
+        """Skaičiuoja augimo stabilumą"""
+        if not updates:
+            return 0.0
+        try:
+            changes = [abs(u.price_change_1h) for u in updates]
+            return 1.0 - (np.std(changes) / max(np.mean(changes), 0.0001))
+        except:
+            return 0.0
+
+    def _calculate_momentum_indicators(self, updates: List[TokenUpdate]) -> Dict:
+        """Skaičiuoja momentum indikatorius"""
+        if not updates:
+            return {'momentum': 0.0, 'acceleration': 0.0}
+        try:
+            price_changes = [u.price_change_1h for u in updates]
+            momentum = sum(price_changes) / len(price_changes)
+            
+            # Skaičiuojame acceleration (pokytis momentum'e)
+            if len(price_changes) > 1:
+                acc = (price_changes[-1] - price_changes[0]) / len(price_changes)
+            else:
+                acc = 0.0
+                
+            return {'momentum': momentum, 'acceleration': acc}
+        except:
+            return {'momentum': 0.0, 'acceleration': 0.0}
+
+    def _analyze_whale_behavior(self, wallets: List[Dict]) -> Dict:
+        """Analizuoja banginių elgseną"""
+        try:
+            whales = [w for w in wallets if w['type'] == '🐳']
+            if not whales:
+                return {'whale_activity': 0.0, 'risk_level': 'low'}
+                
+            whale_ratio = len(whales) / len(wallets)
+            
+            if whale_ratio > 0.5:
+                risk = 'high'
+            elif whale_ratio > 0.3:
+                risk = 'medium'
+            else:
+                risk = 'low'
+                
+            return {
+                'whale_activity': whale_ratio,
+                'risk_level': risk
+            }
+        except:
+            return {'whale_activity': 0.0, 'risk_level': 'error'}
+
+    def _analyze_wallet_ages(self, wallets: List[Dict]) -> Dict:
+        """Analizuoja wallet'ų amžių"""
+        try:
+            if not wallets:
+                return {'avg_age': 0.0, 'new_wallet_ratio': 0.0}
+                
+            # Šiuo atveju neturime wallet age info, tai grąžiname default
+            return {
+                'avg_age': 0.0,
+                'new_wallet_ratio': 0.0
+            }
+        except:
+            return {'avg_age': 0.0, 'new_wallet_ratio': 0.0}
+
+    def _calculate_wallet_risk(self, wallets: List[Dict]) -> float:
+        """Skaičiuoja bendrą wallet riziką"""
+        try:
+            if not wallets:
+                return 1.0  # Aukščiausia rizika jei nėra wallet'ų
+                
+            # Skaičiuojame risk score
+            whale_behavior = self._analyze_whale_behavior(wallets)
+            interactions = self._analyze_wallet_interactions(wallets)
+            
+            risk_score = (
+                float(whale_behavior['whale_activity']) * 0.4 +
+                (1.0 - float(interactions['interaction_score'])) * 0.6
+            )
+            
+            return risk_score
+        except:
+            return 1.0
+
+    def _analyze_top_holder_risk(self, token: TokenMetrics) -> float:
+        """Analizuoja top holder'ių riziką"""
+        try:
+            # Kuo didesnė top holder koncentracija, tuo didesnė rizika
+            return token.top_holder_percentage / 100
+        except:
+            return 1.0
+
+    def _assess_dev_risk(self, token: TokenMetrics) -> float:
+        """Vertina dev riziką"""
+        try:
+            # Vertiname pagal kelis faktorius
+            token_risk = token.dev_token_percentage / 100
+            renounced_bonus = 0.0 if token.owner_renounced else 0.3
+            sol_balance_factor = 1.0 - self._normalize_sol_balance(token.dev_sol_balance)
+            
+            return (token_risk + renounced_bonus + sol_balance_factor) / 3
+        except:
+            return 1.0
+
+    def _calculate_overall_risk(self, token: TokenMetrics) -> float:
+        """Skaičiuoja bendrą rizikos įvertinimą"""
+        try:
+            # Renkame visus rizikos faktorius
+            security_risk = self._assess_security_risk(token)
+            holder_risk = self._assess_holder_risk(token)
+            dev_risk = self._assess_dev_risk(token)
+            pump_dump_risk = self._assess_pump_dump_risk(token)
+            
+            # Skaičiuojame svertinį vidurkį
+            weights = {
+                'security': 0.3,
+                'holder': 0.2,
+                'dev': 0.3,
+                'pump_dump': 0.2
+            }
+            
+            overall = (
+                security_risk * weights['security'] +
+                holder_risk * weights['holder'] +
+                dev_risk * weights['dev'] +
+                pump_dump_risk * weights['pump_dump']
+            )
+            
+            return overall
+        except:
+            return 1.0
+
+    def _assess_pump_dump_risk(self, token: TokenMetrics) -> float:
+        """Vertina pump&dump riziką"""
+        try:
+            # Vertiname pagal kelis faktorius
+            volume_volatility = token.volume_1h / max(token.volume_24h / 24, 0.0001)
+            price_volatility = abs(token.price_change_1h)
+            holder_concentration = token.top_holder_percentage / 100
+            
+            # Skaičiuojame risk score
+            risk_factors = [
+                volume_volatility > 3.0,  # Staigus volume padidėjimas
+                price_volatility > 50.0,  # Didelis kainos svyravimas
+                holder_concentration > 0.5  # Didelė holder koncentracija
+            ]
+            
+            return sum(risk_factors) / len(risk_factors)
+        except:
+            return 1.0
+
+    def _assess_security_risk(self, token: TokenMetrics) -> float:
+        """Vertina saugumo riziką"""
+        try:
+            # Renkame saugumo faktorius
+            contract_security = self._assess_contract_security(token)
+            ownership_security = self._calculate_ownership_score(token)
+            lp_security = token.lp_burnt_percentage / 100
+            
+            # Skaičiuojame bendrą security risk
+            security_risk = 1.0 - ((contract_security + ownership_security + lp_security) / 3)
+            
+            # Pridedame papildomą riziką jei yra mint arba freeze
+            if token.mint_enabled:
+                security_risk += 0.3
+            if token.freeze_enabled:
+                security_risk += 0.2
+                
+            return min(security_risk, 1.0)  # Normalizuojame iki 1.0
+        except:
+            return 1.0
+
+    def _assess_holder_risk(self, token: TokenMetrics) -> float:
+        """Vertina holder'ių riziką"""
+        try:
+            # Vertiname pagal kelis faktorius
+            concentration_risk = token.top_holder_percentage / 100
+            holder_count_factor = 1.0 - min(token.holders_count / 1000, 1.0)  # Normalizuojame iki 1000 holders
+            sniper_risk = token.sniper_percentage / 100
+            
+            # Skaičiuojame svertinį vidurkį
+            weights = {'concentration': 0.4, 'count': 0.3, 'sniper': 0.3}
+            
+            risk_score = (
+                concentration_risk * weights['concentration'] +
+                holder_count_factor * weights['count'] +
+                sniper_risk * weights['sniper']
+            )
+            
+            return min(risk_score, 1.0)
+        except:
+            return 1.0
+                    
 
 class GemFinder:
     def __init__(self):
@@ -1194,16 +1730,16 @@ class GemFinder:
         # Pirma sukuriame db_manager
         self.db_manager = DatabaseManager()
         
+        # Tada sukuriame TokenAnalyzer
+        self.token_analyzer = TokenAnalyzer(self.db_manager, None)  # Laikinai None
         
-        # Tada perduodame jį į MLAnalyzer
-        self.ml_analyzer = MLAnalyzer(self.db_manager)
+        # Tada perduodame token_analyzer į MLAnalyzer
+        self.ml_analyzer = MLAnalyzer(self.db_manager, self.token_analyzer)
+        
+        # Atnaujiname token_analyzer su teisingu ml_analyzer
+        self.token_analyzer.ml = self.ml_analyzer
 
-        # Pridedame TokenAnalyzer
-        # Sukuriame TokenAnalyzer su abiem reikiamais parametrais
-        self.token_analyzer = TokenAnalyzer(
-            db_manager=self.db_manager,
-            ml_analyzer=self.ml_analyzer  # Pridėtas antras parametras
-        )
+        
         
         # Kiti komponentai
         self.processed_messages = set()
