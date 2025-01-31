@@ -366,38 +366,65 @@ class TokenHandler:
     async def handle_token_update(self, token_address: str, new_data: TokenMetrics):
         """Apdoroja token'o atnaujinimą"""
         try:
-            # Gauname pradinę būseną
             initial_data = await self.db.get_initial_state(token_address)
             if not initial_data:
-                logger.info(f"[2025-01-31 15:00:10] Token not found in DB, saving as new: {token_address}")
                 await self.db.save_initial_state(new_data)
                 return
 
-            # Skaičiuojame multiplikatorių
             current_multiplier = new_data.market_cap / initial_data.market_cap
             
             # Išsaugome atnaujinimą
             await self.db.save_token_update(token_address, new_data)
             
-            # Tikriname ar tapo gem (MC padidėjo 10x)
+            # Tikriname ar tapo gem
             if current_multiplier >= 10 and not await self.db.is_gem(token_address):
-                # Pažymime kaip gem
-                await self.db.mark_as_gem(token_address, new_data, current_multiplier)
-                
-                # Atnaujiname ML modelį su nauju gem
+                await self.db.mark_as_gem(token_address)
                 await self.ml.update_model_with_new_gem(initial_data)
-                
-                logger.info(f"[2025-01-31 15:00:10] Token marked as gem: {token_address} ({current_multiplier:.2f}X)")
-                
-                # Siunčiame žinutę apie naują gem
                 await self._send_gem_alert(token_address, initial_data, new_data, current_multiplier)
+            
+            # PRIDEDAME: Tikriname ar tokenas failed
+            elif await self._should_mark_as_failed(initial_data, new_data):
+                reason = await self._get_failure_reason(initial_data, new_data)
+                await self.db.mark_as_failed(token_address, reason)
+                logger.info(f"Token marked as failed: {token_address} - {reason}")
             
             # Gauname naujas ML predikcijas
             new_prediction = await self.ml.predict_potential(new_data)
-            logger.info(f"[2025-01-31 15:00:10] Updated ML prediction for {token_address}: {new_prediction:.2f}")
 
         except Exception as e:
-            logger.error(f"[2025-01-31 15:00:10] Error handling token update: {e}")
+            logger.error(f"Error handling token update: {e}")
+
+    async def _should_mark_as_failed(self, initial_data: TokenMetrics, current_data: TokenMetrics) -> bool:
+        """Tikrina ar tokeną reikia žymėti kaip failed"""
+        # MC nukrito >50% nuo pradinės
+        if current_data.market_cap < (initial_data.market_cap * 0.5):
+            return True
+            
+        # Liquidity nukrito >70%
+        if current_data.liquidity < (initial_data.liquidity * 0.3):
+            return True
+            
+        # Nėra volume per 24h
+        if current_data.volume_24h < 100:
+            return True
+            
+        # Holders sumažėjo >30%
+        if current_data.holders_count < (initial_data.holders_count * 0.7):
+            return True
+            
+        return False
+
+    async def _get_failure_reason(self, initial_data: TokenMetrics, current_data: TokenMetrics) -> str:
+        """Nustato tokeno failed priežastį"""
+        if current_data.market_cap < (initial_data.market_cap * 0.5):
+            return "Market cap dropped >50%"
+        elif current_data.liquidity < (initial_data.liquidity * 0.3):
+            return "Liquidity dropped >70%"
+        elif current_data.volume_24h < 100:
+            return "No trading volume"
+        elif current_data.holders_count < (initial_data.holders_count * 0.7):
+            return "Holders decreased >30%"
+        return "Unknown failure reason"
             
     async def _send_gem_alert(self, token_address: str, initial_data: TokenMetrics, 
                             current_data: TokenMetrics, multiplier: float):
@@ -1798,7 +1825,7 @@ class GemFinder:
         await self.db_manager.check_database()
 
         # Parodome duomenų bazės turinį
-        await self.db_manager.show_database_contents()
+        #await self.db_manager.show_database_contents()
         
         # Užkrauname istorinius duomenis
         await self.ml_analyzer.load_historical_data()
@@ -2040,25 +2067,25 @@ class GemFinder:
         """
         Išvalo tekstą nuo nereikalingų simbolių, bet palieka svarbius emoji
         """
+        
+        
         important_emoji = ['💠', '🤍', '✅', '❌', '🔻', '🐟', '🍤', '🐳', '🌱', '🕒', '📈', '⚡️', '👥', '🔗', '🦅', '🔫', '⚠️', '🛠', '🔝', '🔥', '💧']
         
-        # Pašalinam telegramą ir kitus URL
-        cleaned = re.sub(r'\[.*?\]\(https?://[^)]+\)', '', text)
-        # Pašalinam Markdown žymėjimą
-        cleaned = re.sub(r'\*\*', '', cleaned)
-        # Pašalinam likusius [] ir ()
-        cleaned = re.sub(r'[\[\]()]', '', cleaned)
-        
+        # Pašalinam Markdown ir URL
+        cleaned = re.sub(r'\*\*|\[.*?\]|\(https?://[^)]+\)', '', text)
+    
         # Pašalinam visus specialius simbolius, išskyrus svarbius emoji
         result = ''
         i = 0
         while i < len(cleaned):
             if any(cleaned.startswith(emoji, i) for emoji in important_emoji):
+                # Jei randame svarbų emoji, jį paliekame
                 emoji_found = next(emoji for emoji in important_emoji if cleaned.startswith(emoji, i))
                 result += emoji_found
                 i += len(emoji_found)
             else:
-                if cleaned[i].isalnum() or cleaned[i] in ' .:$%|-':
+                # Kitaip tikriname ar tai normalus simbolis
+                if cleaned[i].isalnum() or cleaned[i] in ' .:$%|-()':
                     result += cleaned[i]
                 i += 1
         
