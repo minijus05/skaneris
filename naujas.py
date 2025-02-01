@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import math  
 import time
 from datetime import datetime, timezone, timedelta
 import numpy as np
@@ -968,7 +969,8 @@ class DatabaseManager:
             twitter_url=result['twitter_url'],
             website_url=result['website_url'],
             dev_sol_balance=result['dev_sol_balance'],
-            dev_token_percentage=result['dev_token_percentage']
+            dev_token_percentage=result['dev_token_percentage'],
+            sniper_wallets=json.loads(result['sniper_wallets']) if result['sniper_wallets'] else None 
         )
         
     async def save_initial_state(self, token_data: TokenMetrics):
@@ -1180,26 +1182,32 @@ class DatabaseManager:
     async def _calculate_time_to_10x(self, token_address: str) -> int:
         """Apskaičiuoja laiką (sekundėmis) per kurį token'as pasiekė 10x"""
         try:
-            # Gauname pradinę būseną
-            initial_state = await self.get_initial_state(token_address)
-            if not initial_state:
+            # Gauname first_seen tiesiai iš token_initial_states
+            first_seen_query = """
+            SELECT first_seen 
+            FROM token_initial_states 
+            WHERE address = ?
+            """
+            initial_result = await self.db.fetch_one(first_seen_query, token_address)
+            if not initial_result:
+                logger.warning(f"[2025-02-01 21:45:44] No initial state found for {token_address}")
                 return 0
 
-            # Gauname visus atnaujinimus, surūšiuotus pagal laiką
-            query = """
+            initial_time = datetime.fromisoformat(str(initial_result['first_seen']))
+
+            # Gauname atnaujinimus
+            updates_query = """
             SELECT timestamp, current_multiplier 
             FROM token_updates 
             WHERE address = ? 
             ORDER BY timestamp ASC
             """
-            updates = await self.db.fetch_all(query, token_address)
+            updates = await self.db.fetch_all(updates_query, token_address)
             
             if not updates:
                 return 0
 
-            # Ieškome pirmo atnaujinimo, kur multiplier >= 10
-            initial_time = datetime.fromisoformat(str(initial_state['first_seen']))
-            
+            # Ieškome pirmo 10x
             for update in updates:
                 if update['current_multiplier'] >= 10:
                     update_time = datetime.fromisoformat(str(update['timestamp']))
@@ -1208,7 +1216,7 @@ class DatabaseManager:
             return 0
             
         except Exception as e:
-            logger.error(f"[{datetime.now(timezone.utc)}] Error calculating time to 10x: {e}")
+            logger.error(f"[2025-02-01 21:45:44] Error calculating time to 10x: {e}")
             return 0
 
     async def show_database_contents(self):
