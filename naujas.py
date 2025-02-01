@@ -87,15 +87,7 @@ class AsyncDatabase:
                 )
             """)
             
-            # Pridedame sniper_wallets stulpelį jei jo nėra
-            try:
-                await self.db.execute("""
-                    ALTER TABLE token_initial_states 
-                    ADD COLUMN sniper_wallets JSON
-                """)
-            except:
-                # Jei stulpelis jau egzistuoja, ignoruojame klaidą
-                pass
+            
             
             # Token atnaujinimai
             await self.execute("""
@@ -322,6 +314,24 @@ class TokenUpdate:
     sniper_percentage: float
     current_multiplier: float
     all_metrics: Dict
+    
+    # Pridedami trūkstami laukai
+    name: str
+    symbol: str
+    age: str
+    mint_enabled: int = 0
+    freeze_enabled: int = 0
+    lp_burnt_percentage: float = 0.0
+    first_20_fresh: int = 0
+    ath_market_cap: float = 0.0
+    ath_multiplier: float = 1.0
+    owner_renounced: int = 0
+    telegram_url: Optional[str] = None
+    twitter_url: Optional[str] = None
+    website_url: Optional[str] = None
+    dev_sol_balance: float = 0.0
+    dev_token_percentage: float = 0.0
+    sniper_wallets: Optional[List[Dict]] = None
     
     def to_dict(self) -> dict:
         """Konvertuoja į žodyną"""
@@ -655,33 +665,7 @@ class MLAnalyzer:
             logger.error(f"[2025-01-31 23:10:45] Error converting features: {e}")
             return np.array([])
             
-    def _train_new_model(self, X: np.array):
-        """Treniruoja naują modelį"""
-        try:
-            # NAUJAS: Patikriname įeinančius duomenis
-            if X is None or len(X) == 0:
-                logger.error(f"[2025-01-31 23:10:45] No data provided for training new model")
-                return None
-                
-            # Sukuriame "dummy" y (visi 1, nes tai sėkmingi tokenai)
-            y = np.ones(X.shape[0])
-            
-            # Treniruojame modelį
-            model = RandomForestClassifier(
-                n_estimators=100,
-                max_depth=5,
-                min_samples_split=4,
-                min_samples_leaf=2,
-                random_state=42
-            )
-            model.fit(X, y)
-            
-            return model
-            
-        except Exception as e:
-            logger.error(f"[2025-01-31 23:10:45] Error training model: {e}")
-            return None
-        
+           
     async def predict_potential(self, token_data: TokenMetrics) -> float:
         """Prognozuoja token'o potencialą tapti gem"""
         try:
@@ -1224,7 +1208,7 @@ class DatabaseManager:
                 logger.info("------------------------")
 
         except Exception as e:
-            logger.error(f"[2025-01-31 15:29:30] Error showing database contents: {e}")
+            logger.error(f"[{datetime.now(timezone.utc)}] Error showing database contents: {e}")
             logger.error(f"Exception details: {str(e)}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
