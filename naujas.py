@@ -190,8 +190,8 @@ class Config:
     SOUL_SCANNER_BOT = 6872314605
     
     # ML settings
-    MIN_TRAINING_SAMPLES = 10
-    RETRAIN_INTERVAL = 24
+    MIN_TRAINING_SAMPLES = 1
+    RETRAIN_INTERVAL = 6
     
     # Database settings
     DB_PATH = 'gem_finder.db'
@@ -262,6 +262,7 @@ class TokenMetrics:
     telegram_url: Optional[str] = None
     twitter_url: Optional[str] = None
     website_url: Optional[str] = None
+    
 
     def to_dict(self) -> Dict:
         """Konvertuoja objektą į žodyną"""
@@ -582,108 +583,107 @@ class MLAnalyzer:
     def _convert_to_features(self, tokens_data: List[TokenMetrics]) -> np.array:
         """Konvertuoja TokenMetrics į feature array naudojant TokenAnalyzer"""
         try:
+            if not tokens_data:
+                logger.warning(f"[2025-02-01 21:04:49] No tokens data provided")
+                return np.array([])
+                
             features = []
             for token in tokens_data:
-                # NAUJAS: Apsauga nuo null reikšmių
-                if token is None:
+                try:
+                    if token is None:
+                        continue
+                        
+                    # Gauname išanalizuotus features
+                    analyzed = self.token_analyzer.prepare_features(token, [])
+                    if not analyzed:  # Pridėtas patikrinimas
+                        logger.warning(f"[2025-02-01 21:04:49] Failed to analyze features for {token.address}")
+                        continue
+
+                    # Apsauga nuo division by zero
+                    market_cap = max(token.market_cap, 0.0001)
+                    liquidity = max(token.liquidity, 0.0001)
+                    volume_1h = max(token.volume_1h, 0.0001)
+                    volume_24h = max(token.volume_24h, 0.0001)
+
+                    # 24h duomenų patikrinimas
+                    has_24h_data = token.volume_24h > 0 or token.price_change_24h != 0
+                    volume_24h = max(token.volume_24h, 0.0001) if has_24h_data else -1
+                    price_change_24h = token.price_change_24h if has_24h_data else -999
+
+                    # Konstruojame feature vektorių
+                    feature_vector = [
+                        analyzed['basic_metrics']['age_hours'],
+                        analyzed['basic_metrics']['market_cap_normalized'],
+                        analyzed['basic_metrics']['liquidity_ratio'],
+                        market_cap,
+                        liquidity,
+                        volume_1h,
+                        volume_24h,
+                        token.price_change_1h,
+                        price_change_24h,  # Pakeista į modifikuotą reikšmę
+                        float(has_24h_data),
+                        analyzed['holder_metrics']['holder_distribution'],
+                        analyzed['holder_metrics']['value_per_holder'],
+                        analyzed['holder_metrics']['top_holder_risk'],
+                        analyzed['sniper_metrics']['sniper_impact'],
+                        analyzed['sniper_metrics']['whale_dominance'],
+                        analyzed['sniper_metrics']['fish_ratio'],
+                        analyzed['sniper_metrics']['sniper_diversity'],
+                        analyzed['dev_metrics']['dev_commitment'],
+                        analyzed['dev_metrics']['owner_risk'],
+                        analyzed['dev_metrics']['dev_sol_strength'],
+                        analyzed['dev_metrics']['dev_token_risk'],
+                        analyzed['dev_metrics']['ownership_score'],
+                        analyzed['security_metrics']['contract_security'],
+                        analyzed['security_metrics']['lp_security'],
+                        analyzed['security_metrics']['mint_risk'],
+                        analyzed['security_metrics']['freeze_risk'],
+                        analyzed['security_metrics']['overall_security_score'],
+                        analyzed['social_metrics']['social_presence'],
+                        analyzed['social_metrics']['has_twitter'],
+                        analyzed['social_metrics']['has_website'],
+                        analyzed['social_metrics']['has_telegram'],
+                        analyzed['social_metrics']['social_risk'],
+                        analyzed['risk_assessment']['overall_risk'],
+                        analyzed['risk_assessment']['pump_dump_risk'],
+                        analyzed['risk_assessment']['security_risk'],
+                        analyzed['risk_assessment']['holder_risk'],
+                        analyzed['risk_assessment']['dev_risk'],
+                        float(token.mint_enabled),
+                        float(token.freeze_enabled),
+                        float(token.owner_renounced)
+                    ]
+                    features.append(feature_vector)
+                    
+                except Exception as e:
+                    logger.error(f"[2025-02-01 21:04:49] Error processing token {token.address}: {str(e)}")
                     continue
                     
-                # Gauname išanalizuotus features per TokenAnalyzer
-                analyzed = self.token_analyzer.prepare_features(token, [])
+            if not features:
+                logger.warning(f"[2025-02-01 21:04:49] No features were created")
+                return np.array([])
                 
-                # NAUJAS: Apsauga nuo division by zero
-                market_cap = max(token.market_cap, 0.0001)
-                liquidity = max(token.liquidity, 0.0001)
-                volume_1h = max(token.volume_1h, 0.0001)
-                volume_24h = max(token.volume_24h, 0.0001)
-
-                # NAUJAS: 24h duomenų patikrinimas
-                has_24h_data = token.has_24h_data
-                volume_24h = max(token.volume_24h, 0.0001) if has_24h_data else -1
-                price_change_24h = token.price_change_24h if has_24h_data else -999
-                
-                # Konstruojame feature vektorių
-                feature_vector = [
-                    # 1. Basic metrics
-                    analyzed['basic_metrics']['age_hours'],
-                    analyzed['basic_metrics']['market_cap_normalized'],
-                    analyzed['basic_metrics']['liquidity_ratio'],
-                    
-                    # 2. Price/Volume metrics su apsauga nuo 0
-                    market_cap,
-                    liquidity,
-                    volume_1h,
-                    volume_24h,
-                    token.price_change_1h,
-                    token.price_change_24h,
-                    float(has_24h_data),  # NAUJAS: Binary feature for 24h data
-                    
-                    # 3. Holder metrics
-                    analyzed['holder_metrics']['holder_distribution'],
-                    analyzed['holder_metrics']['value_per_holder'],
-                    analyzed['holder_metrics']['top_holder_risk'],
-                    
-                    # 4. Sniper metrics
-                    analyzed['sniper_metrics']['sniper_impact'],
-                    analyzed['sniper_metrics']['whale_dominance'],
-                    analyzed['sniper_metrics']['fish_ratio'],
-                    analyzed['sniper_metrics']['sniper_diversity'],
-                    
-                    # 5. Dev metrics
-                    analyzed['dev_metrics']['dev_commitment'],
-                    analyzed['dev_metrics']['owner_risk'],
-                    analyzed['dev_metrics']['dev_sol_strength'],
-                    analyzed['dev_metrics']['dev_token_risk'],
-                    analyzed['dev_metrics']['ownership_score'],
-                    
-                    # 6. Security metrics
-                    analyzed['security_metrics']['contract_security'],
-                    analyzed['security_metrics']['lp_security'],
-                    analyzed['security_metrics']['mint_risk'],
-                    analyzed['security_metrics']['freeze_risk'],
-                    analyzed['security_metrics']['overall_security_score'],
-                    
-                    # 7. Social metrics
-                    analyzed['social_metrics']['social_presence'],
-                    analyzed['social_metrics']['has_twitter'],
-                    analyzed['social_metrics']['has_website'],
-                    analyzed['social_metrics']['has_telegram'],
-                    analyzed['social_metrics']['social_risk'],
-                    
-                    # 8. Risk metrics
-                    analyzed['risk_assessment']['overall_risk'],
-                    analyzed['risk_assessment']['pump_dump_risk'],
-                    analyzed['risk_assessment']['security_risk'],
-                    analyzed['risk_assessment']['holder_risk'],
-                    analyzed['risk_assessment']['dev_risk'],
-                    
-                    # 9. Contract flags
-                    float(token.mint_enabled),
-                    float(token.freeze_enabled),
-                    float(token.owner_renounced)
-                ]
-                features.append(feature_vector)
-            
             # Konvertuojame į numpy array
             features_array = np.array(features)
             
-            # NAUJAS: Patikriname ar nėra nan reikšmių prieš normalizavimą
+            # Patikriname ar nėra nan reikšmių prieš normalizavimą
             if np.isnan(features_array).any():
-                logger.error(f"[2025-01-31 23:10:45] NaN values in features before normalization")
+                logger.error(f"[2025-02-01 21:04:49] NaN values in features before normalization")
                 return np.array([])
             
             # Normalizuojame features
             normalized = self.scaler.fit_transform(features_array)
             
-            # NAUJAS: Patikriname normalizuotas reikšmes
+            # Patikriname normalizuotas reikšmes
             if np.isnan(normalized).any():
-                logger.error(f"[2025-01-31 23:10:45] NaN values after normalization")
+                logger.error(f"[2025-02-01 21:04:49] NaN values after normalization")
                 return np.array([])
                 
+            logger.info(f"[2025-02-01 21:04:49] Successfully converted {len(features)} tokens to features")
             return normalized
             
         except Exception as e:
-            logger.error(f"[2025-01-31 23:10:45] Error converting features: {e}")
+            logger.error(f"[2025-02-01 21:04:49] Error converting features: {e}")
             return np.array([])
             
            
@@ -1380,37 +1380,51 @@ class TokenAnalyzer:
 
     def prepare_features(self, token: TokenMetrics, updates: List[TokenUpdate]) -> Dict:
         """Paruošia visus features ML modeliui"""
-        return {
-            # 1. Pagrindinė informacija ir jos analizė
-            'basic_metrics': self._analyze_basic_metrics(token),
-            
-            # 2. Kainų ir volume analizė
-            'price_volume_metrics': self._analyze_price_volume(token, updates),
-            
-            # 3. Holders analizė
-            'holder_metrics': self._analyze_holders(token, updates),
-            
-            # 4. Snipers analizė
-            'sniper_metrics': self._analyze_snipers(token),
-            
-            # 5. Dev/Owner analizė
-            'dev_metrics': self._analyze_dev_metrics(token),
-            
-            # 6. Socialinių metrikų analizė
-            'social_metrics': self._analyze_social_metrics(token),
-            
-            # 7. Saugumo metrikų analizė
-            'security_metrics': self._analyze_security(token),
-            
-            # 8. Laiko serijos analizė
-            'time_series_metrics': self._analyze_time_series(updates),
-            
-            # 9. Wallet'ų elgsenos analizė
-            'wallet_behavior': self._analyze_wallets(token.sniper_wallets),
-            
-            # 10. Rizikos vertinimas
-            'risk_assessment': self._calculate_risk_metrics(token)
-        }
+        try:
+            if token is None:
+                logger.error(f"[2025-02-01 21:17:42] Token is None")
+                return None
+
+            try:
+                return {
+                    # 1. Pagrindinė informacija ir jos analizė
+                    'basic_metrics': self._analyze_basic_metrics(token),
+                    
+                    # 2. Kainų ir volume analizė
+                    'price_volume_metrics': self._analyze_price_volume(token, updates),
+                    
+                    # 3. Holders analizė
+                    'holder_metrics': self._analyze_holders(token, updates),
+                    
+                    # 4. Snipers analizė
+                    'sniper_metrics': self._analyze_snipers(token),
+                    
+                    # 5. Dev/Owner analizė
+                    'dev_metrics': self._analyze_dev_metrics(token),
+                    
+                    # 6. Socialinių metrikų analizė
+                    'social_metrics': self._analyze_social_metrics(token),
+                    
+                    # 7. Saugumo metrikų analizė
+                    'security_metrics': self._analyze_security(token),
+                    
+                    # 8. Laiko serijos analizė
+                    'time_series_metrics': self._analyze_time_series(updates),
+                    
+                    # 9. Wallet'ų elgsenos analizė
+                    'wallet_behavior': self._analyze_wallets(token.sniper_wallets if token.sniper_wallets else []),
+                    
+                    # 10. Rizikos vertinimas
+                    'risk_assessment': self._calculate_risk_metrics(token)
+                }
+                
+            except Exception as e:
+                logger.error(f"[2025-02-01 21:17:42] Error analyzing features for {token.address}: {str(e)}")
+                return None
+
+        except Exception as e:
+            logger.error(f"[2025-02-01 21:17:42] Error preparing features: {str(e)}")
+            return None
 
     def _analyze_basic_metrics(self, token: TokenMetrics) -> Dict:
         """Analizuoja pagrindinius metrikus"""
@@ -1442,14 +1456,31 @@ class TokenAnalyzer:
 
     def _analyze_snipers(self, token: TokenMetrics) -> Dict:
         """Analizuoja sniperių metrikas"""
-        sniper_types = self._categorize_snipers(token.sniper_wallets)
-        return {
-            'sniper_impact': token.sniper_percentage / 100,
-            'whale_dominance': sniper_types['whale_count'] / max(len(token.sniper_wallets), 1),
-            'fish_ratio': sniper_types['fish_count'] / max(len(token.sniper_wallets), 1),
-            'sniper_diversity': self._calculate_sniper_diversity(token.sniper_wallets),
-            'sniper_behavior_pattern': self._analyze_sniper_patterns(token.sniper_wallets)
-        }
+        try:
+            if token is None or token.sniper_wallets is None:
+                token.sniper_wallets = []
+                logger.warning(f"[2025-02-01 21:32:03] sniper_wallets is None for {token.address}")
+
+            sniper_types = self._categorize_snipers(token.sniper_wallets)
+            wallet_count = len(token.sniper_wallets) if token.sniper_wallets else 1
+            
+            return {
+                'sniper_impact': token.sniper_percentage / 100,
+                'whale_dominance': sniper_types['whale_count'] / max(wallet_count, 1),
+                'fish_ratio': sniper_types['fish_count'] / max(wallet_count, 1),
+                'sniper_diversity': self._calculate_sniper_diversity(token.sniper_wallets),
+                'sniper_behavior_pattern': self._analyze_sniper_patterns(token.sniper_wallets)
+            }
+
+        except Exception as e:
+            logger.error(f"[2025-02-01 21:32:03] Error in _analyze_snipers for {token.address}: {str(e)}")
+            return {
+                'sniper_impact': 0.0,
+                'whale_dominance': 0.0,
+                'fish_ratio': 0.0,
+                'sniper_diversity': 0.0,
+                'sniper_behavior_pattern': 0.0
+            }
 
     def _analyze_dev_metrics(self, token: TokenMetrics) -> Dict:
         """Analizuoja dev/owner metrikas"""
@@ -1803,6 +1834,37 @@ class TokenAnalyzer:
             changes = [abs(u.price_change_1h) for u in updates]
             return 1.0 - (np.std(changes) / max(np.mean(changes), 0.0001))
         except:
+            return 0.0
+
+    def _calculate_wallet_diversity(self, wallets: List[Dict]) -> float:
+        """Skaičiuoja wallet'ų įvairovę"""
+        try:
+            if not wallets:
+                return 0.0
+                
+            # Skaičiuojame kiekvieno tipo wallet'ų skaičių
+            type_counts = {'🐳': 0, '🐟': 0, '🍤': 0, '🌱': 0}
+            for wallet in wallets:
+                if wallet['type'] in type_counts:
+                    type_counts[wallet['type']] += 1
+                    
+            # Skaičiuojame diversity score
+            total_wallets = sum(type_counts.values())
+            if total_wallets == 0:
+                return 0.0
+                
+            # Shannon Diversity Index
+            proportions = [count/total_wallets for count in type_counts.values() if count > 0]
+            diversity = -sum(p * math.log(p) for p in proportions)
+            
+            # Normalizuojame į [0,1] intervalą
+            max_diversity = math.log(len(type_counts))  # Maximum possible diversity
+            normalized_diversity = diversity / max_diversity if max_diversity > 0 else 0.0
+            
+            return normalized_diversity
+            
+        except Exception as e:
+            logger.error(f"[2025-02-01 21:26:24] Error calculating wallet diversity: {str(e)}")
             return 0.0
 
     def _calculate_momentum_indicators(self, updates: List[TokenUpdate]) -> Dict:
