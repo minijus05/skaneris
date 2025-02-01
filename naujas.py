@@ -28,22 +28,21 @@ logger = logging.getLogger(__name__)
 
 class AsyncDatabase:
     def __init__(self):
-        """Inicializuoja AsyncDatabase su SQLite"""
         self.db_path = Config.DB_PATH
         self.conn = None
         self.setup_done = False
-
                 
     async def connect(self):
-        """Prisijungia prie SQLite duomenų bazės"""
         if not self.conn:
             try:
                 self.conn = await aiosqlite.connect(self.db_path)
                 self.conn.row_factory = aiosqlite.Row
-                await self._setup_database()
-                logger.info(f"[2025-01-31 13:22:07] Connected to database: {self.db_path}")
+                if not self.setup_done:
+                    await self._setup_database()
+                    self.setup_done = True
+                logger.info(f"[{datetime.now(timezone.utc)}] Connected to database: {self.db_path}")
             except Exception as e:
-                logger.error(f"[2025-01-31 13:22:07] Database connection error: {e}")
+                logger.error(f"[{datetime.now(timezone.utc)}] Database connection error: {e}")
                 raise
                 
     async def _setup_database(self):
@@ -105,7 +104,7 @@ class AsyncDatabase:
             await self.execute("""
                 CREATE TABLE IF NOT EXISTS successful_tokens (
                     address TEXT PRIMARY KEY,
-                    initial_parameters JSON,
+                    initial_parameters TEXT,
                     time_to_10x INTEGER,
                     discovery_timestamp TIMESTAMP,
                     FOREIGN KEY (address) REFERENCES token_initial_states(address)
@@ -332,6 +331,7 @@ class TokenUpdate:
     dev_sol_balance: float = 0.0
     dev_token_percentage: float = 0.0
     sniper_wallets: Optional[List[Dict]] = None
+    has_24h_data: bool = False
     
     def to_dict(self) -> dict:
         """Konvertuoja į žodyną"""
@@ -349,8 +349,13 @@ class TokenUpdate:
             self.ath_market_cap, self.ath_multiplier,
             self.owner_renounced, self.telegram_url, self.twitter_url, self.website_url,
             self.dev_sol_balance, self.dev_token_percentage,
+            self.has_24h_data,
             json.dumps(self.sniper_wallets) if self.sniper_wallets else None
+            
         )
+    def __post_init__(self):
+        """Nustatome has_24h_data po inicializacijos"""
+        self.has_24h_data = (self.volume_24h > 0 or self.price_change_24h != 0)
 
     
 class TokenHandler:
@@ -409,7 +414,7 @@ class TokenHandler:
             FROM token_initial_states ts
             WHERE ts.status = 'new'
             """
-            tokens = await self.db.fetch_all(query)
+            tokens = await self.db.db.fetch_all(query) 
             
             current_time = datetime.now(timezone.utc)
             
@@ -425,7 +430,7 @@ class TokenHandler:
                     FROM token_updates
                     WHERE address = ?
                     """
-                    update_count = await self.db.fetch_one(updates_query, token['address'])
+                    update_count = await self.db.db.fetch_one(updates_query, token['address'])
                     
                     # Jei nėra atnaujinimų - žymime kaip failed
                     if update_count['count'] == 0:
@@ -492,31 +497,41 @@ class MLAnalyzer:
     async def load_historical_data(self):
         """Užkrauna istorinius duomenis iš duomenų bazės"""
         try:
-            # Gauname visus gems
+            # Gauname visus gems ir failed tokens
             gems = await self.db.get_all_gems()
-            if not gems:
-                logger.info("[2025-01-31 23:10:45] No historical data found")
+            failed_tokens = await self.db.get_failed_tokens()
+            
+            if not gems and not failed_tokens:
+                logger.info("[2025-02-01 20:37:40] No historical data found")
                 return
 
-            # Gauname jų pradinius duomenis
+            # Gauname pradinius duomenis
             historical_data = []
+            
+            # Apdorojame gems
             for gem in gems:
                 initial_state = await self.db.get_initial_state(gem['address'])
                 if initial_state:
                     historical_data.append(initial_state)
+                    
+            # Apdorojame failed tokens
+            for token in failed_tokens:
+                initial_state = await self.db.get_initial_state(token['address'])
+                if initial_state:
+                    historical_data.append(initial_state)
 
             self.historical_data = historical_data
-            logger.info(f"[2025-01-31 23:10:45] Loaded {len(historical_data)} historical records")
+            logger.info(f"[2025-02-01 20:37:40] Loaded historical records - Gems: {len(gems)}, Failed: {len(failed_tokens)}")
 
-            # NAUJAS: Patikriname duomenų kokybę prieš apmokymą
+            # Patikriname duomenų kokybę prieš apmokymą
             if len(historical_data) >= Config.MIN_TRAINING_SAMPLES:
                 # Patikriname ar yra pakankamai įvairių duomenų
-                unique_addresses = len(set(gem.address for gem in historical_data))
-                logger.info(f"[2025-01-31 23:10:45] Found {unique_addresses} unique tokens in historical data")
+                unique_addresses = len(set(token.address for token in historical_data))
+                logger.info(f"[2025-02-01 20:37:40] Found {unique_addresses} unique tokens in historical data")
                 await self.train_model()
                 
         except Exception as e:
-            logger.error(f"[2025-01-31 23:10:45] Error loading historical data: {e}")
+            logger.error(f"[2025-02-01 20:37:40] Error loading historical data: {e}")
         
     async def train_model(self):
         """Treniruoja modelį naudojant sėkmingus ir nepavykusius tokenus"""
@@ -581,6 +596,11 @@ class MLAnalyzer:
                 liquidity = max(token.liquidity, 0.0001)
                 volume_1h = max(token.volume_1h, 0.0001)
                 volume_24h = max(token.volume_24h, 0.0001)
+
+                # NAUJAS: 24h duomenų patikrinimas
+                has_24h_data = token.has_24h_data
+                volume_24h = max(token.volume_24h, 0.0001) if has_24h_data else -1
+                price_change_24h = token.price_change_24h if has_24h_data else -999
                 
                 # Konstruojame feature vektorių
                 feature_vector = [
@@ -596,6 +616,7 @@ class MLAnalyzer:
                     volume_24h,
                     token.price_change_1h,
                     token.price_change_24h,
+                    float(has_24h_data),  # NAUJAS: Binary feature for 24h data
                     
                     # 3. Holder metrics
                     analyzed['holder_metrics']['holder_distribution'],
@@ -850,10 +871,14 @@ class MLAnalyzer:
 class DatabaseManager:
     def __init__(self):
         self.db = AsyncDatabase()
+        self.is_setup = False
 
     async def setup_database(self):
         """Initialize database tables"""
-        await self.db.connect()  # Tai automatiškai iškviečia _setup_database()
+        if not self.is_setup:
+            await self.db.connect()  # Pirma prisijungiame
+            self.is_setup = True
+            logger.info(f"[{datetime.now(timezone.utc)}] Database setup completed")
         
         
                
@@ -1081,32 +1106,76 @@ class DatabaseManager:
     async def check_database(self):
         """Patikrina duomenų bazės būseną"""
         try:
+            current_time = datetime.now(timezone.utc)
+            
             # Tikriname token_initial_states
             initial_states = await self.db.fetch_all("""
                 SELECT COUNT(*) as count, status, COUNT(DISTINCT address) as unique_addresses 
                 FROM token_initial_states 
                 GROUP BY status
             """)
+            
+            # Tikriname nesutapimus tarp lentelių
+            inconsistencies = await self.db.fetch_all("""
+                SELECT t.address, t.status, 
+                    CASE 
+                        WHEN t.status = 'gem' AND s.address IS NULL THEN 'Missing from successful_tokens'
+                        WHEN t.status = 'failed' AND f.address IS NULL THEN 'Missing from failed_tokens'
+                        ELSE NULL 
+                    END as issue
+                FROM token_initial_states t
+                LEFT JOIN successful_tokens s ON t.address = s.address
+                LEFT JOIN failed_tokens f ON t.address = f.address
+                WHERE (t.status = 'gem' AND s.address IS NULL)
+                   OR (t.status = 'failed' AND f.address IS NULL)
+            """)
+            
+            if inconsistencies:
+                logger.warning(f"[{current_time}] Found data inconsistencies:")
+                for inc in inconsistencies:
+                    logger.warning(f"[{current_time}] Address {inc['address']} ({inc['status']}): {inc['issue']}")
+                    
+                    # Automatiškai pataisome
+                    if inc['status'] == 'gem':
+                        initial_data = await self.get_initial_state(inc['address'])
+                        if initial_data:
+                            await self.db.execute("""
+                                INSERT INTO successful_tokens (
+                                    address, initial_parameters, time_to_10x, discovery_timestamp
+                                ) VALUES (?, ?, ?, ?)
+                            """, (
+                                inc['address'],
+                                json.dumps(initial_data.to_dict()),
+                                0,
+                                current_time
+                            ))
+                            logger.info(f"[{current_time}] Fixed missing gem: {inc['address']}")
+
+            # Rodyti statistiką
             for state in initial_states:
-                logger.info(f"[{datetime.now(timezone.utc)}] Initial states - Status: {state['status']}, "
+                logger.info(f"[{current_time}] Initial states - Status: {state['status']}, "
                            f"Count: {state['count']}, Unique addresses: {state['unique_addresses']}")
 
             # Tikriname successful_tokens
-            successful = await self.db.fetch_all("""
-                SELECT COUNT(*) as count FROM successful_tokens
-            """)
-            logger.info(f"[{datetime.now(timezone.utc)}] Successful tokens count: {successful[0]['count']}")
+            successful = await self.db.fetch_all("SELECT COUNT(*) as count FROM successful_tokens")
+            failed = await self.db.fetch_all("SELECT COUNT(*) as count FROM failed_tokens")  # Pridėta failed tokens statistika
+            
+            logger.info(f"[{current_time}] Successful tokens count: {successful[0]['count']}")
+            logger.info(f"[{current_time}] Failed tokens count: {failed[0]['count']}")  # Naujas log'as
 
             # Tikriname token_updates
             updates = await self.db.fetch_all("""
                 SELECT COUNT(*) as count, COUNT(DISTINCT address) as unique_addresses 
                 FROM token_updates
             """)
-            logger.info(f"[{datetime.now(timezone.utc)}] Updates count: {updates[0]['count']}, "
+            logger.info(f"[{current_time}] Updates count: {updates[0]['count']}, "
                        f"Unique addresses: {updates[0]['unique_addresses']}")
 
+            # Patikriname duomenų bazės dydį ir veikimą
+            logger.info(f"[{current_time}] Database health check completed successfully")
+
         except Exception as e:
-            logger.error(f"[{datetime.now(timezone.utc)}] Error checking database: {e}")
+            logger.error(f"[{current_time}] Error checking database: {e}")
     
     async def _calculate_time_to_10x(self, token_address: str) -> int:
         """Apskaičiuoja laiką (sekundėmis) per kurį token'as pasiekė 10x"""
@@ -1922,8 +1991,18 @@ class TokenAnalyzer:
 
 class GemFinder:
     def __init__(self):
-        """Inicializuojame GemFinder"""
-        self.logger = logger  
+        self.logger = logger
+        self.telegram = None
+        self.scanner_client = None
+        self.db_manager = None
+        self.token_analyzer = None
+        self.ml_analyzer = None
+        self.token_handler = None
+        self.processed_messages = set()
+
+    async def initialize(self):
+        """Inicializuoja visus komponentus"""
+        # Sukuriame telegram klientus
         self.telegram = TelegramClient('gem_finder_session', 
                                      Config.TELEGRAM_API_ID, 
                                      Config.TELEGRAM_API_HASH)
@@ -1931,33 +2010,29 @@ class GemFinder:
                                            Config.TELEGRAM_API_ID,
                                            Config.TELEGRAM_API_HASH)
 
-        
-        # Pirma sukuriame db_manager
+        # Pirma inicializuojame DB
         self.db_manager = DatabaseManager()
+        await self.db_manager.setup_database()
+        logger.info(f"[2025-02-01 12:26:01] Database initialized")
         
-        # Tada sukuriame TokenAnalyzer
-        self.token_analyzer = TokenAnalyzer(self.db_manager, None)  # Laikinai None
-        
-        # Tada perduodame token_analyzer į MLAnalyzer
+        # Tada kuriame kitus komponentus su jau inicializuota DB
+        self.token_analyzer = TokenAnalyzer(self.db_manager, None)
         self.ml_analyzer = MLAnalyzer(self.db_manager, self.token_analyzer)
-        
-        # Atnaujiname token_analyzer su teisingu ml_analyzer
         self.token_analyzer.ml = self.ml_analyzer
-
         self.token_handler = TokenHandler(self.db_manager, self.ml_analyzer)
         
-        # Kiti komponentai
-        self.processed_messages = set()
-        
-        logger.info(f"[2025-02-01 10:08:58] GemFinder initialized")
-        
+        logger.info(f"[2025-02-01 12:26:01] GemFinder initialized")
+
+        #await gem_finder.db_manager.show_database_contents()
+
     async def start(self):
         """Paleidžia GemFinder"""
-        # Pirma inicializuojame duomenų bazę
-        await self.db_manager.setup_database()
+        # Pirma inicializuojame visus komponentus
+        await self.initialize()
+        
         await self.telegram.start()
         await self.scanner_client.start()
-        logger.info(f"[2025-02-01 10:08:58] GemFinder started")
+        logger.info(f"[2025-02-01 12:26:01] GemFinder started")
         
         # Pradedame periodinį neaktyvių tokenų tikrinimą
         asyncio.create_task(self._run_periodic_checks())
@@ -2587,19 +2662,18 @@ class GemFinder:
             self.logger.error(f"Error parsing message: {str(e)}")
             return {}
 
-# Main programos paleidimas
 if __name__ == "__main__":
     try:
         gem_finder = GemFinder()
-        logger.info(f"[2025-01-31 12:41:51] Starting GemFinder...")
+        logger.info(f"[2025-02-01 12:27:36] Starting GemFinder...")
         
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(gem_finder.start())
+        # Pakeičiame get_event_loop() į run()
+        asyncio.run(gem_finder.start())
         
     except KeyboardInterrupt:
-        logger.info(f"[2025-01-31 12:41:51] Shutting down GemFinder...")
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(gem_finder.stop())
+        logger.info(f"[2025-02-01 12:27:36] Shutting down GemFinder...")
+        # Taip pat pakeičiame ir čia
+        asyncio.run(gem_finder.stop())
     except Exception as e:
-        logger.error(f"[2025-01-31 12:41:51] Fatal error: {str(e)}")
-        raise                        
+        logger.error(f"[2025-02-01 12:27:36] Fatal error: {str(e)}")
+        raise
