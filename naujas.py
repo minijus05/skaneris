@@ -353,16 +353,16 @@ class TokenHandler:
         try:
             # Išsaugome pradinę būseną
             await self.db.save_initial_state(token_data)
-            logger.info(f"[2025-01-31 15:00:10] Saved initial state for: {token_data.address}")
+            logger.info(f"[2025-02-01 10:03:54] Saved initial state for: {token_data.address}")
             
             # Gauname ML predikcijas
             initial_prediction = await self.ml.predict_potential(token_data)
-            logger.info(f"[2025-01-31 15:00:10] Initial ML prediction for {token_data.address}: {initial_prediction:.2f}")
+            logger.info(f"[2025-02-01 10:03:54] Initial ML prediction for {token_data.address}: {initial_prediction:.2f}")
             
             return initial_prediction
             
         except Exception as e:
-            logger.error(f"[2025-01-31 15:00:10] Error handling new token: {e}")
+            logger.error(f"[2025-02-01 10:03:54] Error handling new token: {e}")
             return 0.0
 
     async def handle_token_update(self, token_address: str, new_data: TokenMetrics):
@@ -384,50 +384,51 @@ class TokenHandler:
                 await self.ml.update_model_with_new_gem(initial_data)
                 await self._send_gem_alert(token_address, initial_data, new_data, current_multiplier)
             
-            # PRIDEDAME: Tikriname ar tokenas failed
-            elif await self._should_mark_as_failed(initial_data, new_data):
-                reason = await self._get_failure_reason(initial_data, new_data)
-                await self.db.mark_as_failed(token_address, reason)
-                logger.info(f"Token marked as failed: {token_address} - {reason}")
-            
             # Gauname naujas ML predikcijas
             new_prediction = await self.ml.predict_potential(new_data)
 
         except Exception as e:
             logger.error(f"Error handling token update: {e}")
 
-    async def _should_mark_as_failed(self, initial_data: TokenMetrics, current_data: TokenMetrics) -> bool:
-        """Tikrina ar tokeną reikia žymėti kaip failed"""
-        # MC nukrito >50% nuo pradinės
-        if current_data.market_cap < (initial_data.market_cap * 0.5):
-            return True
+    async def check_inactive_tokens(self):
+        """Tikrina ir pažymi neaktyvius token'us"""
+        try:
+            # Gauname visus token'us su statusu 'new'
+            query = """
+            SELECT ts.address, ts.first_seen
+            FROM token_initial_states ts
+            WHERE ts.status = 'new'
+            """
+            tokens = await self.db.fetch_all(query)
             
-        # Liquidity nukrito >70%
-        if current_data.liquidity < (initial_data.liquidity * 0.3):
-            return True
+            current_time = datetime.now(timezone.utc)
             
-        # Nėra volume per 24h
-        if current_data.volume_24h < 100:
-            return True
+            for token in tokens:
+                # Skaičiuojame kiek laiko praėjo
+                time_difference = current_time - datetime.fromisoformat(str(token['first_seen']))
+                
+                # Jei praėjo daugiau nei 6 valandos
+                if time_difference.total_seconds() > 6 * 3600:  # 6 valandos sekundėmis
+                    # Tikriname ar buvo atnaujinimų
+                    updates_query = """
+                    SELECT COUNT(*) as count
+                    FROM token_updates
+                    WHERE address = ?
+                    """
+                    update_count = await self.db.fetch_one(updates_query, token['address'])
+                    
+                    # Jei nėra atnaujinimų - žymime kaip failed
+                    if update_count['count'] == 0:
+                        await self.db.mark_as_failed(
+                            token['address'],
+                            "No updates for 6 hours"
+                        )
             
-        # Holders sumažėjo >30%
-        if current_data.holders_count < (initial_data.holders_count * 0.7):
-            return True
+            logger.info(f"[2025-02-01 10:03:54] Inactive tokens check completed")
             
-        return False
+        except Exception as e:
+            logger.error(f"[2025-02-01 10:03:54] Error checking inactive tokens: {e}")
 
-    async def _get_failure_reason(self, initial_data: TokenMetrics, current_data: TokenMetrics) -> str:
-        """Nustato tokeno failed priežastį"""
-        if current_data.market_cap < (initial_data.market_cap * 0.5):
-            return "Market cap dropped >50%"
-        elif current_data.liquidity < (initial_data.liquidity * 0.3):
-            return "Liquidity dropped >70%"
-        elif current_data.volume_24h < 100:
-            return "No trading volume"
-        elif current_data.holders_count < (initial_data.holders_count * 0.7):
-            return "Holders decreased >30%"
-        return "Unknown failure reason"
-            
     async def _send_gem_alert(self, token_address: str, initial_data: TokenMetrics, 
                             current_data: TokenMetrics, multiplier: float):
         """Siunčia žinutę apie naują gem"""
@@ -456,10 +457,10 @@ class TokenHandler:
                 await self.telegram_client.start()
                 
             await self.telegram_client.send_message(Config.TELEGRAM_DEST_CHAT1, message)
-            logger.info(f"[2025-01-31 15:00:10] Sent gem alert for: {token_address}")
+            logger.info(f"[2025-02-01 10:03:54] Sent gem alert for: {token_address}")
             
         except Exception as e:
-            logger.error(f"[2025-01-31 15:00:10] Error sending gem alert: {e}")
+            logger.error(f"[2025-02-01 10:03:54] Error sending gem alert: {e}")
 
 class MLAnalyzer:
     def __init__(self, db_manager, token_analyzer=None):
@@ -870,6 +871,7 @@ class DatabaseManager:
         """Initialize database tables"""
         await self.db.connect()  # Tai automatiškai iškviečia _setup_database()
         
+        
                
         # Tada sukuriame sniper_wallets lentelę
         await self.db.execute("""
@@ -903,6 +905,18 @@ class DatabaseManager:
                 address TEXT NOT NULL UNIQUE,
                 initial_parameters TEXT NOT NULL,
                 time_to_10x INTEGER,
+                discovery_timestamp TIMESTAMP,
+                FOREIGN KEY(address) REFERENCES token_initial_states(address)
+            )
+        """)
+
+        # Sukuriame failed_tokens lentelę
+        await self.db.execute("""
+            CREATE TABLE IF NOT EXISTS failed_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                address TEXT NOT NULL UNIQUE,
+                initial_parameters TEXT NOT NULL,
+                failure_reason TEXT,
                 discovery_timestamp TIMESTAMP,
                 FOREIGN KEY(address) REFERENCES token_initial_states(address)
             )
@@ -1215,18 +1229,7 @@ class DatabaseManager:
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
 
-        # Pridedame failed_tokens lentelę
-        await self.db.execute("""
-            CREATE TABLE IF NOT EXISTS failed_tokens (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                address TEXT NOT NULL UNIQUE,
-                initial_parameters TEXT NOT NULL,
-                failure_reason TEXT,
-                discovery_timestamp TIMESTAMP,
-                FOREIGN KEY(address) REFERENCES token_initial_states(address)
-            )
-        """)
-        
+                
     async def get_failed_tokens(self):
         """Gauna visus nepavykusius tokenus"""
         try:
@@ -1958,27 +1961,25 @@ class GemFinder:
         self.token_analyzer.ml = self.ml_analyzer
 
         self.token_handler = TokenHandler(self.db_manager, self.ml_analyzer)
-
-        
         
         # Kiti komponentai
         self.processed_messages = set()
         
-        logger.info(f"[2025-01-31 13:19:12] GemFinder initialized")
+        logger.info(f"[2025-02-01 10:08:58] GemFinder initialized")
         
     async def start(self):
         """Paleidžia GemFinder"""
         # Pirma inicializuojame duomenų bazę
-        await self.db_manager.setup_database()  # <-- Čia perkeliame!
+        await self.db_manager.setup_database()
         await self.telegram.start()
         await self.scanner_client.start()
-        logger.info(f"[2025-01-31 13:30:42] GemFinder started")
+        logger.info(f"[2025-02-01 10:08:58] GemFinder started")
+        
+        # Pradedame periodinį neaktyvių tokenų tikrinimą
+        asyncio.create_task(self._run_periodic_checks())
         
         # Patikriname duomenų bazės būseną
         await self.db_manager.check_database()
-
-        # Parodome duomenų bazės turinį
-        #await self.db_manager.show_database_contents()
         
         # Užkrauname istorinius duomenis
         await self.ml_analyzer.load_historical_data()
@@ -1990,6 +1991,16 @@ class GemFinder:
             
         # Laukiame pranešimų
         await self.telegram.run_until_disconnected()
+
+    async def _run_periodic_checks(self):
+        """Paleidžia periodinius tikrinimus"""
+        while True:
+            try:
+                await self.token_handler.check_inactive_tokens()
+                await asyncio.sleep(3600)  # Tikriname kas valandą
+            except Exception as e:
+                logger.error(f"[2025-02-01 10:08:58] Error in periodic checks: {e}")
+                await asyncio.sleep(60)  # Jei klaida, bandome vėl po minutės
 
     async def stop(self):
         """Sustabdo GemFinder"""
