@@ -6,10 +6,12 @@ from datetime import datetime, timezone, timedelta
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier
-import logging
+
 from dataclasses import dataclass
 from typing import Optional, Dict, List
 from telethon import TelegramClient, events
+import logging
+logger = logging.getLogger(__name__)
 
 import aiosqlite
 import sqlite3
@@ -190,7 +192,7 @@ class Config:
     TELEGRAM_API_HASH = 'bd0054bc5393af360bc3930a27403c33'
     TELEGRAM_SOURCE_CHATS = ['@solearlytrending', '@botubotass']
     TELEGRAM_DEST_CHAT = '@smartas1'
-    TELEGRAM_DEST_CHAT1 = '@botubotass'
+    TELEGRAM_DEST_CHAT1 = '@smartas1'
     
     # Scanner settings
     SCANNER_GROUP = '@skaneriss'
@@ -471,6 +473,10 @@ class MLAnalyzer:
         # Jei token_analyzer neperduotas, sukuriame naują
         if self.token_analyzer is None:
             self.token_analyzer = TokenAnalyzer(db_manager, self)
+
+        # NAUJAS: Pridedame counters ML kokybės stebėjimui
+        self.predictions_made = 0
+        self.successful_predictions = 0
         
     async def load_historical_data(self):
         """Užkrauna istorinius duomenis iš duomenų bazės"""
@@ -478,7 +484,7 @@ class MLAnalyzer:
             # Gauname visus gems
             gems = await self.db.get_all_gems()
             if not gems:
-                logger.info("[2025-01-31 13:30:42] No historical data found")
+                logger.info("[2025-01-31 23:10:45] No historical data found")
                 return
 
             # Gauname jų pradinius duomenis
@@ -489,14 +495,17 @@ class MLAnalyzer:
                     historical_data.append(initial_state)
 
             self.historical_data = historical_data
-            logger.info(f"[2025-01-31 13:30:42] Loaded {len(historical_data)} historical records")
+            logger.info(f"[2025-01-31 23:10:45] Loaded {len(historical_data)} historical records")
 
-            # Apmokome modelį su istoriniais duomenimis
+            # NAUJAS: Patikriname duomenų kokybę prieš apmokymą
             if len(historical_data) >= Config.MIN_TRAINING_SAMPLES:
+                # Patikriname ar yra pakankamai įvairių duomenų
+                unique_addresses = len(set(gem.address for gem in historical_data))
+                logger.info(f"[2025-01-31 23:10:45] Found {unique_addresses} unique tokens in historical data")
                 await self.train_model()
                 
         except Exception as e:
-            logger.error(f"[2025-01-31 13:30:42] Error loading historical data: {e}")
+            logger.error(f"[2025-01-31 23:10:45] Error loading historical data: {e}")
         
     async def train_model(self):
         """Treniruoja modelį naudojant sėkmingus ir nepavykusius tokenus"""
@@ -505,19 +514,29 @@ class MLAnalyzer:
             successful_tokens = await self.db.get_all_gems()
             failed_tokens = await self.db.get_failed_tokens()
             
-            logger.info(f"[{datetime.now(timezone.utc)}] Training model with {len(successful_tokens)} successful and {len(failed_tokens)} failed tokens")
+            logger.info(f"[2025-01-31 23:10:45] Training model with {len(successful_tokens)} successful and {len(failed_tokens)} failed tokens")
+            
+            # NAUJAS: Minimalaus duomenų kiekio patikrinimas
+            if len(successful_tokens) < Config.MIN_TRAINING_SAMPLES or len(failed_tokens) < Config.MIN_TRAINING_SAMPLES:
+                logger.warning(f"[2025-01-31 23:10:45] Not enough training data. Need at least {Config.MIN_TRAINING_SAMPLES} samples of each type.")
+                return
             
             # Konvertuojame į features
             X_success = self._convert_to_features([await self.db.get_initial_state(t['address']) for t in successful_tokens])
             X_failed = self._convert_to_features([await self.db.get_initial_state(t['address']) for t in failed_tokens])
             
             if len(X_success) == 0 or len(X_failed) == 0:
-                logger.warning("Not enough data for training")
+                logger.warning("[2025-01-31 23:10:45] Not enough data for training")
                 return
             
             # Sujungiame features ir labels
             X = np.vstack([X_success, X_failed])
             y = np.hstack([np.ones(len(X_success)), np.zeros(len(X_failed))])
+            
+            # NAUJAS: Patikriname ar nėra nan reikšmių
+            if np.isnan(X).any():
+                logger.error("[2025-01-31 23:10:45] NaN values in training data")
+                return
             
             # Treniruojame modelį
             self.model = RandomForestClassifier(
@@ -529,18 +548,28 @@ class MLAnalyzer:
             )
             self.model.fit(X, y)
             
-            logger.info(f"[{datetime.now(timezone.utc)}] Model trained successfully")
+            logger.info(f"[2025-01-31 23:10:45] Model trained successfully")
             
         except Exception as e:
-            logger.error(f"[{datetime.now(timezone.utc)}] Error training model: {e}")
+            logger.error(f"[2025-01-31 23:10:45] Error training model: {e}")
         
     def _convert_to_features(self, tokens_data: List[TokenMetrics]) -> np.array:
         """Konvertuoja TokenMetrics į feature array naudojant TokenAnalyzer"""
         try:
             features = []
             for token in tokens_data:
+                # NAUJAS: Apsauga nuo null reikšmių
+                if token is None:
+                    continue
+                    
                 # Gauname išanalizuotus features per TokenAnalyzer
-                analyzed = self.token_analyzer.prepare_features(token, [])  # Tuščias updates list, nes tai pradinis state
+                analyzed = self.token_analyzer.prepare_features(token, [])
+                
+                # NAUJAS: Apsauga nuo division by zero
+                market_cap = max(token.market_cap, 0.0001)
+                liquidity = max(token.liquidity, 0.0001)
+                volume_1h = max(token.volume_1h, 0.0001)
+                volume_24h = max(token.volume_24h, 0.0001)
                 
                 # Konstruojame feature vektorių
                 feature_vector = [
@@ -549,11 +578,11 @@ class MLAnalyzer:
                     analyzed['basic_metrics']['market_cap_normalized'],
                     analyzed['basic_metrics']['liquidity_ratio'],
                     
-                    # 2. Price/Volume metrics
-                    token.market_cap,  # Raw market cap
-                    token.liquidity,   # Raw liquidity
-                    token.volume_1h,   # Raw volume 1h
-                    token.volume_24h,  # Raw volume 24h
+                    # 2. Price/Volume metrics su apsauga nuo 0
+                    market_cap,
+                    liquidity,
+                    volume_1h,
+                    volume_24h,
                     token.price_change_1h,
                     token.price_change_24h,
                     
@@ -606,16 +635,33 @@ class MLAnalyzer:
             # Konvertuojame į numpy array
             features_array = np.array(features)
             
+            # NAUJAS: Patikriname ar nėra nan reikšmių prieš normalizavimą
+            if np.isnan(features_array).any():
+                logger.error(f"[2025-01-31 23:10:45] NaN values in features before normalization")
+                return np.array([])
+            
             # Normalizuojame features
-            return self.scaler.fit_transform(features_array)
+            normalized = self.scaler.fit_transform(features_array)
+            
+            # NAUJAS: Patikriname normalizuotas reikšmes
+            if np.isnan(normalized).any():
+                logger.error(f"[2025-01-31 23:10:45] NaN values after normalization")
+                return np.array([])
+                
+            return normalized
             
         except Exception as e:
-            logger.error(f"[{datetime.now(timezone.utc)}] Error converting features: {e}")
+            logger.error(f"[2025-01-31 23:10:45] Error converting features: {e}")
             return np.array([])
             
     def _train_new_model(self, X: np.array):
         """Treniruoja naują modelį"""
         try:
+            # NAUJAS: Patikriname įeinančius duomenis
+            if X is None or len(X) == 0:
+                logger.error(f"[2025-01-31 23:10:45] No data provided for training new model")
+                return None
+                
             # Sukuriame "dummy" y (visi 1, nes tai sėkmingi tokenai)
             y = np.ones(X.shape[0])
             
@@ -632,12 +678,17 @@ class MLAnalyzer:
             return model
             
         except Exception as e:
-            logger.error(f"[{datetime.now(timezone.utc)}] Error training model: {e}")
+            logger.error(f"[2025-01-31 23:10:45] Error training model: {e}")
             return None
         
     async def predict_potential(self, token_data: TokenMetrics) -> float:
         """Prognozuoja token'o potencialą tapti gem"""
         try:
+            # NAUJAS: Patikriname ar token_data validus
+            if token_data is None:
+                logger.error(f"[2025-01-31 23:10:45] Token data is None")
+                return 0.0
+                
             if not self.model:
                 await self.train_model()
                 if not self.model:
@@ -647,7 +698,15 @@ class MLAnalyzer:
             if len(features) == 0:
                 return 0.0
                 
+            # NAUJAS: Patikriname features prieš predikciją
+            if np.isnan(features).any():
+                logger.error(f"[2025-01-31 23:10:45] NaN values in prediction features")
+                return 0.0
+                
             probability = self.model.predict_proba(features)[0][1]  # Imame teigiamos klasės tikimybę
+            
+            # NAUJAS: Atnaujiname prediction metrics
+            self.predictions_made += 1
             
             # Jei tikimybė aukšta, siunčiame žinutę
             if probability >= Config.MIN_GEM_PROBABILITY:
@@ -656,7 +715,7 @@ class MLAnalyzer:
             return probability
             
         except Exception as e:
-            logger.error(f"[{datetime.now(timezone.utc)}] Error predicting potential: {e}")
+            logger.error(f"[2025-01-31 23:10:45] Error predicting potential: {e}")
             return 0.0
             
     async def _send_potential_gem_alert(self, token_data: TokenMetrics, probability: float):
@@ -668,11 +727,16 @@ class MLAnalyzer:
                                                     Config.TELEGRAM_API_HASH)
                 await self.telegram_client.start()
             
+            # NAUJAS: Patikriname ar turime visus reikalingus duomenis
+            name = token_data.name or "Unknown"
+            symbol = token_data.symbol or "Unknown"
+            address = token_data.address or "Unknown"
+            
             # Formatuojame žinutę
             message = (
                 f"🎯 POTENTIAL GEM DETECTED! 🎯\n\n"
-                f"Token: {token_data.name} (${token_data.symbol})\n"
-                f"Address: {token_data.address}\n\n"
+                f"Token: {name} (${symbol})\n"
+                f"Address: {address}\n\n"
                 f"Current Stats:\n"
                 f"Market Cap: ${token_data.market_cap:,.0f}\n"
                 f"Liquidity: ${token_data.liquidity:,.0f}\n"
@@ -689,26 +753,114 @@ class MLAnalyzer:
             )
             
             await self.telegram_client.send_message(Config.TELEGRAM_DEST_CHAT, message)
-            logger.info(f"[{datetime.now(timezone.utc)}] Sent potential gem alert for: {token_data.address}")
+            logger.info(f"[2025-01-31 23:10:45] Sent potential gem alert for: {address}")
             
         except Exception as e:
-            logger.error(f"[{datetime.now(timezone.utc)}] Error sending potential gem alert: {e}")
+            logger.error(f"[2025-01-31 23:10:45] Error sending potential gem alert: {e}")
+
+    def _get_feature_names(self) -> List[str]:
+        """Grąžina feature pavadinimų sąrašą"""
+        return [
+            # Basic metrics
+            'age_hours',
+            'market_cap_normalized',
+            'liquidity_ratio',
+            
+            # Price/Volume metrics
+            'market_cap',
+            'liquidity',
+            'volume_1h',
+            'volume_24h',
+            'price_change_1h',
+            'price_change_24h',
+            
+            # Holder metrics
+            'holder_distribution',
+            'value_per_holder',
+            'top_holder_risk',
+            
+            # Sniper metrics
+            'sniper_impact',
+            'whale_dominance',
+            'fish_ratio',
+            'sniper_diversity',
+            
+            # Dev metrics
+            'dev_commitment',
+            'owner_risk',
+            'dev_sol_strength',
+            'dev_token_risk',
+            'ownership_score',
+            
+            # Security metrics
+            'contract_security',
+            'lp_security',
+            'mint_risk',
+            'freeze_risk',
+            'overall_security_score',
+            
+            # Social metrics
+            'social_presence',
+            'has_twitter',
+            'has_website',
+            'has_telegram',
+            'social_risk',
+            
+            # Risk metrics
+            'overall_risk',
+            'pump_dump_risk',
+            'security_risk',
+            'holder_risk',
+            'dev_risk',
+            
+            # Contract flags
+            'mint_enabled',
+            'freeze_enabled',
+            'owner_renounced'
+        ]
             
     async def update_model_with_new_gem(self, token_data: TokenMetrics):
         """Atnaujina modelį su nauju gem"""
         try:
+            # NAUJAS: Patikrinimas ar token_data validus
+            if token_data is None:
+                logger.error(f"[2025-02-01 09:06:21] Cannot update model - token data is None")
+                return
+                
             if not self.historical_data:
                 self.historical_data = []
             
             self.historical_data.append(token_data)
             
+            # NAUJAS: Atnaujiname successful predictions metriką
+            self.successful_predictions += 1
+            
             # Jei turime pakankamai duomenų, atnaujiname modelį
             if len(self.historical_data) >= Config.MIN_TRAINING_SAMPLES:
                 await self.train_model()
-                logger.info(f"[{datetime.now(timezone.utc)}] Model updated with new gem: {token_data.address}")
+                logger.info(f"[2025-02-01 09:06:21] Model updated with new gem: {token_data.address}")
                 
+                # NAUJAS: Loginame prediction accuracy
+                if self.predictions_made > 0:
+                    accuracy = (self.successful_predictions / self.predictions_made) * 100
+                    logger.info(f"[2025-02-01 09:06:21] Current model accuracy: {accuracy:.2f}%")
+                    logger.info(f"[2025-02-01 09:06:21] Total predictions: {self.predictions_made}")
+                    logger.info(f"[2025-02-01 09:06:21] Successful predictions: {self.successful_predictions}")
+                    
+                # NAUJAS: Feature importance analizė
+                if self.model:
+                    features = self._get_feature_names()
+                    importances = self.model.feature_importances_
+                    sorted_idx = np.argsort(importances)
+                    top_features = [(features[i], importances[i]) for i in sorted_idx[-5:]]
+                    logger.info(f"[2025-02-01 09:06:21] Top 5 important features:")
+                    for feature, importance in reversed(top_features):
+                        logger.info(f"[2025-02-01 09:06:21] - {feature}: {importance:.4f}")
+                    
         except Exception as e:
-            logger.error(f"[{datetime.now(timezone.utc)}] Error updating model: {e}")
+            logger.error(f"[2025-02-01 09:06:21] Error updating model: {e}")
+        
+    
 
 class DatabaseManager:
     def __init__(self):
@@ -1784,6 +1936,7 @@ class TokenAnalyzer:
 class GemFinder:
     def __init__(self):
         """Inicializuojame GemFinder"""
+        self.logger = logger  
         self.telegram = TelegramClient('gem_finder_session', 
                                      Config.TELEGRAM_API_ID, 
                                      Config.TELEGRAM_API_HASH)
