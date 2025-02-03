@@ -191,8 +191,8 @@ class Config:
     SOUL_SCANNER_BOT = 6872314605
     
     # ML settings
-    MIN_TRAINING_SAMPLES = 1
-    RETRAIN_INTERVAL = 6
+    MIN_TRAINING_SAMPLES = 10
+    RETRAIN_INTERVAL = 12
     
     # Database settings
     DB_PATH = 'gem_finder.db'
@@ -461,10 +461,13 @@ class TokenHandler:
     async def _send_gem_notification(self, token_data: TokenMetrics, probability: float) -> None:
         """Siunčia pranešimą apie potencialų gem"""
         try:
+            gmgn_url = f"https://gmgn.ai/token/{token_data.address}"
+            current_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            
             message = (
                 f"🔍 POTENTIAL GEM DETECTED!\n\n"
-                f"Token: {token_data.symbol}\n"
-                f"Address: {token_data.address}\n"
+                f"Token: {initial_data.name} (${initial_data.symbol})\n"
+                f"Address: <code>{token_address}</code>\n"  # Kopijuojamas tekstas
                 f"Probability: {probability*100:.1f}%\n\n"
                 f"Market Cap: ${token_data.market_cap:,.0f}\n"
                 f"Liquidity: ${token_data.liquidity:,.0f}\n"
@@ -476,24 +479,31 @@ class TokenHandler:
                 f"• Freeze: {'✅' if not token_data.freeze_enabled else '⚠️'}\n"
                 f"• Owner: {'✅' if token_data.owner_renounced else '⚠️'}\n\n"
                 f"Links:\n"
+                f"🔗 <a href='{gmgn_url}'>View on GMGN.AI</a>\n"
+                f"----------------------------------------------\n"
                 f"🌐 Website: {token_data.website_url or 'N/A'}\n"
                 f"🐦 Twitter: {token_data.twitter_url or 'N/A'}\n"
-                f"💬 Telegram: {token_data.telegram_url or 'N/A'}"
+                f"💬 Telegram: {token_data.telegram_url or 'N/A'}\n\n"
+                f"⏰ Found at: {current_time} UTC\n"
+                f"<i>Tap token address to copy</i>"
             )
             
-            await self._send_notification(message)
+            await self._send_notification(message, parse_mode='HTML')
             
         except Exception as e:
-            logger.error(f"[2025-02-03 14:44:23] Error sending gem notification: {e}")
+            logger.error(f"[{datetime.now(timezone.utc)}] Error sending gem notification: {e}")
 
     async def _send_gem_confirmed_notification(self, token_address: str, initial_data: TokenMetrics, 
-                                            current_data: TokenMetrics, multiplier: float):
+        current_data: TokenMetrics, multiplier: float):
         """Siunčia pranešimą apie patvirtintą gem"""
         try:
+            gmgn_url = f"https://gmgn.ai/token/{token_address}"
+            current_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            
             message = (
                 f"🚀 NEW GEM CONFIRMED! 🚀\n\n"
                 f"Token: {initial_data.name} (${initial_data.symbol})\n"
-                f"Address: {token_address}\n\n"
+                f"Address: <code>{token_address}</code>\n"  # Kopijuojamas tekstas
                 f"Performance:\n"
                 f"Initial MC: ${initial_data.market_cap:,.0f}\n"
                 f"Current MC: ${current_data.market_cap:,.0f}\n"
@@ -502,35 +512,38 @@ class TokenHandler:
                 f"Holders: {current_data.holders_count}\n"
                 f"Volume 1h: ${current_data.volume_1h:,.0f}\n"
                 f"Liquidity: ${current_data.liquidity:,.0f}\n\n"
-                f"Security Status:\n"
+                f"Security:\n"
                 f"• Mint: {'✅' if not current_data.mint_enabled else '⚠️'}\n"
                 f"• Freeze: {'✅' if not current_data.freeze_enabled else '⚠️'}\n"
                 f"• Owner: {'✅' if current_data.owner_renounced else '⚠️'}\n\n"
                 f"Links:\n"
+                f"🔗 <a href='{gmgn_url}'>View on GMGN.AI</a>\n"
+                f"----------------------------------------------\n"
                 f"🐦 Twitter: {current_data.twitter_url or 'N/A'}\n"
                 f"🌐 Website: {current_data.website_url or 'N/A'}\n"
-                f"💬 Telegram: {current_data.telegram_url or 'N/A'}"
+                f"💬 Telegram: {current_data.telegram_url or 'N/A'}\n\n"
+                f"⏰ Found at: {current_time} UTC\n"
+                f"<i>Tap token address to copy</i>"
             )
             
-            await self._send_notification(message)
-            logger.info(f"[2025-02-03 14:44:23] Sent gem confirmed alert for: {token_address}")
+            await self._send_notification(message, parse_mode='HTML')
             
         except Exception as e:
-            logger.error(f"[2025-02-03 14:44:23] Error sending gem confirmed notification: {e}")
+            logger.error(f"[{datetime.now(timezone.utc)}] Error sending gem confirmed notification: {e}")
 
-    async def _send_notification(self, message: str) -> None:
+    async def _send_notification(self, message: str, parse_mode: str = None) -> None:
         """Siunčia pranešimą į Telegram"""
         try:
             if not self.telegram_client:
-                logger.error(f"[2025-02-03 17:18:55] Telegram client not initialized")
+                logger.error(f"[{datetime.now(timezone.utc)}] Telegram client not initialized")
                 return
                 
-            await self.telegram_client.send_message(Config.TELEGRAM_DEST_CHAT1, message)
-            logger.info(f"[2025-02-03 17:18:55] Sent notification to Telegram")
+            await self.telegram_client.send_message(Config.TELEGRAM_DEST_CHAT1, message, parse_mode=parse_mode)
+            logger.info(f"[{datetime.now(timezone.utc)}] Sent notification to Telegram")
             
         except Exception as e:
-            logger.error(f"[2025-02-03 17:18:55] Error sending notification: {e}")
-            logger.error(f"[2025-02-03 17:18:55] Error details: {str(e)}")
+            logger.error(f"[{datetime.now(timezone.utc)}] Error sending notification: {e}")
+            logger.error(f"[{datetime.now(timezone.utc)}] Error details: {str(e)}")
 
     async def check_inactive_tokens(self):
         """Tikrina ir pažymi neaktyvius token'us"""
@@ -2764,8 +2777,8 @@ class GemFinder:
                 # 5. Atnaujiname duomenų bazės būseną
                 await self.db_manager.check_database()
                 
-                logger.info(f"[2025-02-03 18:07:45] Database and ML update completed")
-                await asyncio.sleep(3600)  # Tikriname kas valandą
+                # Naudojame RETRAIN_INTERVAL iš Config (valandos į sekundes)
+                await asyncio.sleep(Config.RETRAIN_INTERVAL * 3600)
                 
             except Exception as e:
                 logger.error(f"[2025-02-03 18:07:45] Error in periodic checks: {e}")
