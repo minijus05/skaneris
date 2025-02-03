@@ -364,22 +364,27 @@ class TokenHandler:
     def __init__(self, db_manager, ml_analyzer):
         self.db = db_manager
         self.ml = ml_analyzer
+        self.telegram_client = None
         
     async def handle_new_token(self, token_data: TokenMetrics):
         """Apdoroja naują token'ą"""
         try:
             # Išsaugome pradinę būseną
             await self.db.save_initial_state(token_data)
-            logger.info(f"[2025-02-01 10:03:54] Saved initial state for: {token_data.address}")
+            logger.info(f"[2025-02-03 14:44:23] Saved initial state for: {token_data.address}")
             
-            # Gauname ML predikcijas
+            # Gauname ML predikcijas tik vieną kartą
             initial_prediction = await self.ml.predict_potential(token_data)
-            logger.info(f"[2025-02-01 10:03:54] Initial ML prediction for {token_data.address}: {initial_prediction:.2f}")
+            logger.info(f"[2025-02-03 14:44:23] Initial ML prediction for {token_data.address}: {initial_prediction:.2f}")
+            
+            # Tikriname potencialą su jau turima predikcija
+            if self._meets_basic_criteria(token_data) and initial_prediction >= Config.MIN_GEM_PROBABILITY:
+                await self._send_gem_notification(token_data, initial_prediction)
             
             return initial_prediction
             
         except Exception as e:
-            logger.error(f"[2025-02-01 10:03:54] Error handling new token: {e}")
+            logger.error(f"[2025-02-03 14:44:23] Error handling new token: {e}")
             return 0.0
 
     async def handle_token_update(self, token_address: str, new_data: TokenMetrics):
@@ -394,61 +399,95 @@ class TokenHandler:
             
             # Išsaugome atnaujinimą
             await self.db.save_token_update(token_address, new_data)
+            logger.info(f"[2025-02-03 14:58:13] Token update saved for {token_address}, current multiplier: {current_multiplier:.2f}x")
             
-            # Tikriname ar tapo gem
+            # Tikriname ar tapo gem (10x)
             if current_multiplier >= 10 and not await self.db.is_gem(token_address):
-                await self.db.mark_as_gem(token_address)
-                await self.ml.update_model_with_new_gem(initial_data)
-                await self._send_gem_alert(token_address, initial_data, new_data, current_multiplier)
+                logger.info(f"[2025-02-03 14:58:13] Token reached 10x: {token_address} ({current_multiplier:.2f}X)")
+                
+                try:
+                    # Pirma siunčiame pranešimą
+                    await self._send_gem_confirmed_notification(token_address, initial_data, new_data, current_multiplier)
+                    logger.info(f"[2025-02-03 14:58:13] Gem notification sent for {token_address}")
+                    
+                    # Tada žymime kaip gem ir atnaujiname modelį
+                    await self.db.mark_as_gem(token_address)
+                    await self.ml.update_model_with_new_gem(initial_data)
+                    logger.info(f"[2025-02-03 14:58:13] Token marked as gem and model updated: {token_address}")
+                except Exception as notification_error:
+                    logger.error(f"[2025-02-03 14:58:13] Error in gem notification process: {notification_error}")
+                    import traceback
+                    logger.error(f"Notification error traceback: {traceback.format_exc()}")
             
             # Gauname naujas ML predikcijas
-            new_prediction = await self.ml.predict_potential(new_data)
-
-        except Exception as e:
-            logger.error(f"Error handling token update: {e}")
-
-    async def check_inactive_tokens(self):
-        """Tikrina ir pažymi neaktyvius token'us"""
-        try:
-            # Gauname visus token'us su statusu 'new'
-            query = """
-            SELECT ts.address, ts.first_seen
-            FROM token_initial_states ts
-            WHERE ts.status = 'new'
-            """
-            tokens = await self.db.db.fetch_all(query) 
-            
-            current_time = datetime.now(timezone.utc)
-            
-            for token in tokens:
-                # Skaičiuojame kiek laiko praėjo
-                time_difference = current_time - datetime.fromisoformat(str(token['first_seen']))
+            try:
+                new_prediction = await self.ml.predict_potential(new_data)
+                logger.info(f"[2025-02-03 14:58:13] New prediction for {token_address}: {new_prediction:.2f}")
                 
-                # Jei praėjo daugiau nei 6 valandos
-                if time_difference.total_seconds() > 6 * 3600:  # 6 valandos sekundėmis
-                    # Tikriname ar buvo atnaujinimų
-                    updates_query = """
-                    SELECT COUNT(*) as count
-                    FROM token_updates
-                    WHERE address = ?
-                    """
-                    update_count = await self.db.db.fetch_one(updates_query, token['address'])
-                    
-                    # Jei nėra atnaujinimų - žymime kaip failed
-                    if update_count['count'] == 0:
-                        await self.db.mark_as_failed(
-                            token['address'],
-                            "No updates for 6 hours"
-                        )
+                if new_prediction >= Config.MIN_GEM_PROBABILITY and self._meets_basic_criteria(new_data):
+                    await self._send_gem_notification(new_data, new_prediction)
+                    logger.info(f"[2025-02-03 14:58:13] Potential gem notification sent for {token_address}")
+            except Exception as prediction_error:
+                logger.error(f"[2025-02-03 14:58:13] Error in prediction process: {prediction_error}")
+
+        except Exception as e:
+            logger.error(f"[2025-02-03 14:58:13] Error handling token update: {e}")
+            import traceback
+            logger.error(f"Main update error traceback: {traceback.format_exc()}")
             
-            logger.info(f"[2025-02-01 10:03:54] Inactive tokens check completed")
+    def _meets_basic_criteria(self, token_data: TokenMetrics) -> bool:
+        """Patikriname ar token'as atitinka basic kriterijus"""
+        try:
+            logger.info(f"[2025-02-03 14:44:23] Checking criteria for {token_data.address}:")
+            logger.info(f"Market Cap: ${token_data.market_cap:,.0f}")
+            logger.info(f"Min MC: ${Config.MIN_MC_FOR_GEM:,.0f}")
+            logger.info(f"Max MC: ${Config.MAX_MC_FOR_GEM:,.0f}")
+            
+            if token_data.market_cap < Config.MIN_MC_FOR_GEM:
+                logger.info(f"[2025-02-03 14:44:23] Token {token_data.address} MC too low")
+                return False
+                
+            if token_data.market_cap > Config.MAX_MC_FOR_GEM:
+                logger.info(f"[2025-02-03 14:44:23] Token {token_data.address} MC too high")
+                return False
+                
+            return True
             
         except Exception as e:
-            logger.error(f"[2025-02-01 10:03:54] Error checking inactive tokens: {e}")
+            logger.error(f"[2025-02-03 14:44:23] Error in basic criteria check: {e}")
+            return False
 
-    async def _send_gem_alert(self, token_address: str, initial_data: TokenMetrics, 
-                            current_data: TokenMetrics, multiplier: float):
-        """Siunčia žinutę apie naują gem"""
+    async def _send_gem_notification(self, token_data: TokenMetrics, probability: float) -> None:
+        """Siunčia pranešimą apie potencialų gem"""
+        try:
+            message = (
+                f"🔍 POTENTIAL GEM DETECTED!\n\n"
+                f"Token: {token_data.symbol}\n"
+                f"Address: {token_data.address}\n"
+                f"Probability: {probability*100:.1f}%\n\n"
+                f"Market Cap: ${token_data.market_cap:,.0f}\n"
+                f"Liquidity: ${token_data.liquidity:,.0f}\n"
+                f"Age: {token_data.age}\n"
+                f"Holders: {token_data.holders_count}\n"
+                f"Volume 1h: ${token_data.volume_1h:,.0f}\n\n"
+                f"Security:\n"
+                f"• Mint: {'✅' if not token_data.mint_enabled else '⚠️'}\n"
+                f"• Freeze: {'✅' if not token_data.freeze_enabled else '⚠️'}\n"
+                f"• Owner: {'✅' if token_data.owner_renounced else '⚠️'}\n\n"
+                f"Links:\n"
+                f"🌐 Website: {token_data.website_url or 'N/A'}\n"
+                f"🐦 Twitter: {token_data.twitter_url or 'N/A'}\n"
+                f"💬 Telegram: {token_data.telegram_url or 'N/A'}"
+            )
+            
+            await self._send_notification(message)
+            
+        except Exception as e:
+            logger.error(f"[2025-02-03 14:44:23] Error sending gem notification: {e}")
+
+    async def _send_gem_confirmed_notification(self, token_address: str, initial_data: TokenMetrics, 
+                                            current_data: TokenMetrics, multiplier: float):
+        """Siunčia pranešimą apie patvirtintą gem"""
         try:
             message = (
                 f"🚀 NEW GEM CONFIRMED! 🚀\n\n"
@@ -462,11 +501,25 @@ class TokenHandler:
                 f"Holders: {current_data.holders_count}\n"
                 f"Volume 1h: ${current_data.volume_1h:,.0f}\n"
                 f"Liquidity: ${current_data.liquidity:,.0f}\n\n"
+                f"Security Status:\n"
+                f"• Mint: {'✅' if not current_data.mint_enabled else '⚠️'}\n"
+                f"• Freeze: {'✅' if not current_data.freeze_enabled else '⚠️'}\n"
+                f"• Owner: {'✅' if current_data.owner_renounced else '⚠️'}\n\n"
                 f"Links:\n"
                 f"🐦 Twitter: {current_data.twitter_url or 'N/A'}\n"
-                f"🌐 Website: {current_data.website_url or 'N/A'}"
+                f"🌐 Website: {current_data.website_url or 'N/A'}\n"
+                f"💬 Telegram: {current_data.telegram_url or 'N/A'}"
             )
             
+            await self._send_notification(message)
+            logger.info(f"[2025-02-03 14:44:23] Sent gem confirmed alert for: {token_address}")
+            
+        except Exception as e:
+            logger.error(f"[2025-02-03 14:44:23] Error sending gem confirmed notification: {e}")
+
+    async def _send_notification(self, message: str) -> None:
+        """Siunčia pranešimą į Telegram"""
+        try:
             if not self.telegram_client:
                 self.telegram_client = TelegramClient('gem_alert_session', 
                                                     Config.TELEGRAM_API_ID, 
@@ -474,10 +527,50 @@ class TokenHandler:
                 await self.telegram_client.start()
                 
             await self.telegram_client.send_message(Config.TELEGRAM_DEST_CHAT1, message)
-            logger.info(f"[2025-02-01 10:03:54] Sent gem alert for: {token_address}")
+            logger.info(f"[2025-02-03 14:44:23] Sent notification to Telegram")
             
         except Exception as e:
-            logger.error(f"[2025-02-01 10:03:54] Error sending gem alert: {e}")
+            logger.error(f"[2025-02-03 14:44:23] Error sending notification: {e}")
+
+    async def check_inactive_tokens(self):
+        """Tikrina ir pažymi neaktyvius token'us"""
+        try:
+            query = "SELECT address, first_seen FROM token_initial_states WHERE status = 'new'"
+            tokens = await self.db.fetch_all(query)
+            
+            current_time = datetime.now(timezone.utc)
+            checked_count = 0
+            failed_count = 0
+            
+            for token in tokens:
+                try:
+                    first_seen = datetime.fromisoformat(str(token['first_seen']))
+                    time_difference = current_time - first_seen
+                    
+                    if time_difference.total_seconds() > 6 * 3600:
+                        updates_query = "SELECT COUNT(*) as count FROM token_updates WHERE address = ?"
+                        update_count = await self.db.fetch_one(updates_query, (token['address'],))
+                        
+                        if update_count['count'] == 0:
+                            await self.db.mark_as_failed(
+                                token['address'],
+                                f"No updates for {time_difference.total_seconds() / 3600:.1f} hours"
+                            )
+                            failed_count += 1
+                            logger.info(f"[2025-02-03 14:44:23] Marked {token['address']} as failed - no updates")
+                    
+                    checked_count += 1
+                    
+                except Exception as e:
+                    logger.error(f"[2025-02-03 14:44:23] Error checking token {token['address']}: {e}")
+                    continue
+            
+            logger.info(f"[2025-02-03 14:44:23] Inactive tokens check completed - Checked: {checked_count}, Failed: {failed_count}")
+            
+        except Exception as e:
+            logger.error(f"[2025-02-03 14:44:23] Error in check_inactive_tokens: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
 
 class MLAnalyzer:
     def __init__(self, db_manager, token_analyzer=None):
@@ -1371,48 +1464,67 @@ class DatabaseManager:
     async def mark_as_gem(self, token_address: str):
         """Pažymi token'ą kaip gem ir išsaugo į successful_tokens"""
         try:
+            current_time = datetime.now(timezone.utc)
+            
             # Patikrinam ar jau ne gem
             if await self.is_gem(token_address):
-                logger.info(f"[{datetime.now(timezone.utc)}] Token {token_address} is already marked as gem")
-                return
+                logger.info(f"[2025-02-03 15:01:59] Token {token_address} is already marked as gem")
+                return False
+                
+            # Patikriname ar jau yra successful_tokens lentelėje
+            check_query = "SELECT address FROM successful_tokens WHERE address = ?"
+            existing = await self.db.fetch_one(check_query, token_address)
+            
+            if existing:
+                logger.info(f"[2025-02-03 15:01:59] Token {token_address} already in successful_tokens")
+                return True
                 
             # 1. Atnaujina statusą
             await self.db.execute(
                 "UPDATE token_initial_states SET status = 'gem' WHERE address = ?",
                 token_address
             )
+            logger.info(f"[2025-02-03 15:01:59] Updated status to gem for {token_address}")
             
             # 2. Gauna pradinę būseną ir laiką iki 10x
             initial_data = await self.get_initial_state(token_address)
             if not initial_data:
-                logger.error(f"[{datetime.now(timezone.utc)}] No initial state found for {token_address}")
-                return
+                logger.error(f"[2025-02-03 15:01:59] No initial state found for {token_address}")
+                return False
                 
             time_to_10x = await self._calculate_time_to_10x(token_address)
+            logger.info(f"[2025-02-03 15:01:59] Calculated time to 10x for {token_address}: {time_to_10x} seconds")
             
-            # 3. Išsaugo į successful_tokens
-            query = """
-            INSERT INTO successful_tokens (
-                address, initial_parameters, time_to_10x, discovery_timestamp
-            ) VALUES (?, ?, ?, ?)
-            """
-            current_time = datetime.now(timezone.utc)
-            
-            # Konvertuojame į JSON string
-            initial_parameters_json = json.dumps(initial_data.to_dict())
-            
-            await self.db.execute(query, (
-                token_address,
-                initial_parameters_json,  # Dabar perduodame JSON string
-                time_to_10x,
-                current_time
-            ))
-            
-            logger.info(f"[{current_time}] Successfully marked {token_address} as gem")
-            
+            try:
+                # 3. Išsaugo į successful_tokens su REPLACE INTO vietoj INSERT
+                query = """
+                REPLACE INTO successful_tokens (
+                    address, initial_parameters, time_to_10x, discovery_timestamp
+                ) VALUES (?, ?, ?, ?)
+                """
+                
+                # Konvertuojame į JSON string
+                initial_parameters_json = json.dumps(initial_data.to_dict())
+                
+                await self.db.execute(query, (
+                    token_address,
+                    initial_parameters_json,
+                    time_to_10x,
+                    current_time
+                ))
+                
+                logger.info(f"[2025-02-03 15:01:59] Successfully marked {token_address} as gem")
+                return True
+                
+            except Exception as insert_error:
+                logger.error(f"[2025-02-03 15:01:59] Error inserting into successful_tokens: {insert_error}")
+                return False
+                
         except Exception as e:
-            logger.error(f"[{datetime.now(timezone.utc)}] Error marking as gem: {e}")
-            raise
+            logger.error(f"[2025-02-03 15:01:59] Error marking as gem: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return False
         
     async def get_all_gems(self):
         """Gauna visus sėkmingus tokenus mokymui"""
@@ -1668,6 +1780,8 @@ class DatabaseManager:
             
         except Exception as e:
             logger.error(f"[{datetime.now(timezone.utc)}] Error marking token as failed: {e}")
+
+    
 
 class TokenAnalytics:
     def __init__(self, db_manager):
@@ -2499,7 +2613,7 @@ class GemFinder:
                 return
 
             token_address = token_addresses[0]
-            logger.info(f"[2025-01-31 13:25:15] Processing new token: {token_address}")
+            logger.info(f"[2025-02-03 14:25:39] Processing new token: {token_address}")
 
             # Renkame token info
             token_data = await self._collect_token_data(token_address)
@@ -2508,13 +2622,18 @@ class GemFinder:
 
             # Išsaugome pradinį snapshot
             await self.db_manager.save_initial_state(token_data)
-            logger.info(f"[2025-01-31 13:25:15] Saved initial state for: {token_address}")
+            logger.info(f"[2025-02-03 14:25:39] Saved initial state for: {token_address}")
 
+            # Apdorojame naują tokeną per TokenHandler
+            initial_prediction = await self.token_handler.handle_new_token(token_data)
             
-
+            # Tikriname potencialą
+            await self.token_handler.check_token_potential(token_data)
+            
+            logger.info(f"[2025-02-03 14:25:39] Token {token_address} processed with initial prediction: {initial_prediction:.2f}")
 
         except Exception as e:
-            logger.error(f"[2025-01-31 13:25:15] Error handling new token: {e}")
+            logger.error(f"[2025-02-03 14:25:39] Error handling new token: {e}")
 
     async def _handle_token_update(self, message: str):
         """Apdoroja token'o atnaujinimą"""
