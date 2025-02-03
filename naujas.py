@@ -87,28 +87,53 @@ class AsyncDatabase:
                 )
             """)
             
-            
-            
-            # Token atnaujinimai
+                        
+            # 1. Sniper wallets lentelė
+            await self.execute("""
+                CREATE TABLE IF NOT EXISTS sniper_wallets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    address TEXT NOT NULL UNIQUE,
+                    type TEXT NOT NULL,
+                    success_rate REAL DEFAULT 0.0,
+                    total_trades INTEGER DEFAULT 0,
+                    last_active TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # 2. Token updates lentelė
             await self.execute("""
                 CREATE TABLE IF NOT EXISTS token_updates (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    address TEXT,
-                    all_metrics JSON,
+                    address TEXT NOT NULL,
+                    all_metrics TEXT NOT NULL,
                     timestamp TIMESTAMP,
                     current_multiplier REAL,
-                    FOREIGN KEY (address) REFERENCES token_initial_states(address)
+                    FOREIGN KEY(address) REFERENCES token_initial_states(address)
                 )
             """)
-            
-            # Sėkmingi tokenai (gems)
+
+            # 3. Successful tokens lentelė
             await self.execute("""
                 CREATE TABLE IF NOT EXISTS successful_tokens (
-                    address TEXT PRIMARY KEY,
-                    initial_parameters TEXT,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    address TEXT NOT NULL UNIQUE,
+                    initial_parameters TEXT NOT NULL,
                     time_to_10x INTEGER,
                     discovery_timestamp TIMESTAMP,
-                    FOREIGN KEY (address) REFERENCES token_initial_states(address)
+                    FOREIGN KEY(address) REFERENCES token_initial_states(address)
+                )
+            """)
+
+            # 4. Failed tokens lentelė
+            await self.execute("""
+                CREATE TABLE IF NOT EXISTS failed_tokens (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    address TEXT NOT NULL UNIQUE,
+                    initial_parameters TEXT NOT NULL,
+                    failure_reason TEXT,
+                    discovery_timestamp TIMESTAMP,
+                    FOREIGN KEY(address) REFERENCES token_initial_states(address)
                 )
             """)
             
@@ -420,16 +445,7 @@ class TokenHandler:
                     import traceback
                     logger.error(f"Notification error traceback: {traceback.format_exc()}")
             
-            # Gauname naujas ML predikcijas
-            try:
-                new_prediction = await self.ml.predict_potential(new_data)
-                logger.info(f"[2025-02-03 14:58:13] New prediction for {token_address}: {new_prediction:.2f}")
-                
-                if new_prediction >= Config.MIN_GEM_PROBABILITY and self._meets_basic_criteria(new_data):
-                    await self._send_gem_notification(new_data, new_prediction)
-                    logger.info(f"[2025-02-03 14:58:13] Potential gem notification sent for {token_address}")
-            except Exception as prediction_error:
-                logger.error(f"[2025-02-03 14:58:13] Error in prediction process: {prediction_error}")
+            
 
         except Exception as e:
             logger.error(f"[2025-02-03 14:58:13] Error handling token update: {e}")
@@ -466,7 +482,7 @@ class TokenHandler:
             
             message = (
                 f"🔍 POTENTIAL GEM DETECTED!\n\n"
-                f"Token: {initial_data.name} (${initial_data.symbol})\n"
+                f"Token: {initial_data.name} (${initial_data.symbol})\n" 
                 f"Address: <code>{token_address}</code>\n"  # Kopijuojamas tekstas
                 f"Probability: {probability*100:.1f}%\n\n"
                 f"Market Cap: ${token_data.market_cap:,.0f}\n"
@@ -502,7 +518,7 @@ class TokenHandler:
             
             message = (
                 f"🚀 NEW GEM CONFIRMED! 🚀\n\n"
-                f"Token: {initial_data.name} (${initial_data.symbol})\n"
+                f"Token: {initial_data.name} (${initial_data.symbol})\n" 
                 f"Address: <code>{token_address}</code>\n"  # Kopijuojamas tekstas
                 f"Performance:\n"
                 f"Initial MC: ${initial_data.market_cap:,.0f}\n"
@@ -1022,10 +1038,7 @@ class MLAnalyzer:
                 logger.info(f"[2025-02-03 12:44:18] Total predictions: {self.predictions_made}")
                 logger.info(f"[2025-02-03 12:44:18] Successful predictions: {self.successful_predictions}")
             
-            # Analizuojame features
-            await self.analyze_success_patterns()
-            await self.analyze_trend_changes()
-            await self.analyze_feature_correlations()
+            
             
         except Exception as e:
             logger.error(f"[2025-02-03 12:44:18] Error updating model: {e}")
@@ -1409,58 +1422,9 @@ class DatabaseManager:
             logger.error(f"Query: {query}")
             logger.error(f"Params: {params}")
             raise
-            
-        
-        
+                 
                
-        # Tada sukuriame sniper_wallets lentelę
-        await self.db.execute("""
-            CREATE TABLE IF NOT EXISTS sniper_wallets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                address TEXT NOT NULL UNIQUE,
-                type TEXT NOT NULL,
-                success_rate REAL DEFAULT 0.0,
-                total_trades INTEGER DEFAULT 0,
-                last_active TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-
-        # Sukuriame token_updates lentelę
-        await self.db.execute("""
-            CREATE TABLE IF NOT EXISTS token_updates (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                address TEXT NOT NULL,
-                all_metrics TEXT NOT NULL,
-                timestamp TIMESTAMP,
-                current_multiplier REAL,
-                FOREIGN KEY(address) REFERENCES token_initial_states(address)
-            )
-        """)
-
-        # Sukuriame successful_tokens lentelę
-        await self.db.execute("""
-            CREATE TABLE IF NOT EXISTS successful_tokens (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                address TEXT NOT NULL UNIQUE,
-                initial_parameters TEXT NOT NULL,
-                time_to_10x INTEGER,
-                discovery_timestamp TIMESTAMP,
-                FOREIGN KEY(address) REFERENCES token_initial_states(address)
-            )
-        """)
-
-        # Sukuriame failed_tokens lentelę
-        await self.db.execute("""
-            CREATE TABLE IF NOT EXISTS failed_tokens (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                address TEXT NOT NULL UNIQUE,
-                initial_parameters TEXT NOT NULL,
-                failure_reason TEXT,
-                discovery_timestamp TIMESTAMP,
-                FOREIGN KEY(address) REFERENCES token_initial_states(address)
-            )
-        """)
+        
         
     async def get_initial_state(self, address: str):
         """Gauna pradinę token'o būseną"""
@@ -2827,10 +2791,7 @@ class GemFinder:
             if not token_data:
                 return
 
-            # Išsaugome pradinį snapshot
-            await self.db_manager.save_initial_state(token_data)
-            logger.info(f"[2025-02-03 14:25:39] Saved initial state for: {token_address}")
-
+            
             # Apdorojame naują tokeną per TokenHandler
             initial_prediction = await self.token_handler.handle_new_token(token_data)
             
@@ -2842,7 +2803,6 @@ class GemFinder:
             logger.error(f"[2025-02-03 14:25:39] Error handling new token: {e}")
 
     async def _handle_token_update(self, message: str):
-        """Apdoroja token'o atnaujinimą"""
         try:
             token_addresses = self._extract_token_addresses(message)
             if not token_addresses:
@@ -2853,24 +2813,9 @@ class GemFinder:
             if not current_data:
                 return
 
-            
-
-
-            # Patikriname ar token'as jau yra DB
-            initial_data = await self.db_manager.get_initial_state(token_address)
-            if initial_data:
-                # Jei yra, išsaugome atnaujinimą
-                logger.info(f"[{datetime.now(timezone.utc)}] Saving update for token: {token_address}")
-                await self.db_manager.save_token_update(token_address, current_data)
-
-                # Tikriname ar tapo gem
-                current_multiplier = current_data.market_cap / initial_data.market_cap
-                if current_multiplier >= 10 and not await self.db_manager.is_gem(token_address):
-                    await self.db_manager.mark_as_gem(token_address)
-                    logger.info(f"[{datetime.now(timezone.utc)}] Token marked as gem: {token_address} ({current_multiplier:.2f}X)")
-            else:
-                # Jei nėra, išsaugome kaip naują
-                logger.info(f"[{datetime.now(timezone.utc)}] Token not found in DB, saving as new: {token_address}")
+            # Perduodame update'ą TokenHandler'iui
+            await self.token_handler.handle_token_update(token_address, current_data)
+            logger.info(f"[{datetime.now(timezone.utc)}] Token update handled through TokenHandler: {token_address}")
                 
         except Exception as e:
             logger.error(f"[{datetime.now(timezone.utc)}] Error handling token update: {e}")
@@ -3227,6 +3172,11 @@ class GemFinder:
                                 x_match = re.search(r'X\]\((https://[^)]+)\)', line)
                                 if x_match:
                                     social_links['X'] = x_match.group(1)
+
+                            if 'TG' in line:
+                                tg_match = re.search(r'TG\]\((https://[^)]+)\)', line)
+                                if tg_match:
+                                    social_links['TG'] = tg_match.group(1)
                             
                             if 'WEB' in line:
                                 web_match = re.search(r'WEB\]\((https://[^)]+)\)', line)
