@@ -413,13 +413,18 @@ class TokenHandler:
             logger.error(f"[2025-02-03 14:44:23] Error handling new token: {e}")
             return 0.0
 
-    async def handle_token_update(self, token_address: str, new_data: TokenMetrics):
+    async def handle_token_update(self, token_address: str, new_data: TokenMetrics, is_new_token: bool = False):
         """Apdoroja token'o atnaujinimą"""
         try:
             initial_data = await self.db.get_initial_state(token_address)
             if not initial_data:
-                await self.db.save_initial_state(new_data)
-                return
+                if is_new_token:  # Jei tai naujas token'as
+                    await self.handle_new_token(new_data)  # Naudojame handle_new_token metodą
+                    logger.info(f"[2025-02-03 14:58:13] New token processed via update: {token_address}")
+                    return
+                else:
+                    logger.warning(f"[2025-02-03 14:58:13] Skipping update for unknown token: {token_address}")
+                    return
 
             current_multiplier = new_data.market_cap / initial_data.market_cap
             
@@ -482,8 +487,8 @@ class TokenHandler:
             
             message = (
                 f"🔍 POTENTIAL GEM DETECTED!\n\n"
-                f"Token: {initial_data.name} (${initial_data.symbol})\n" 
-                f"Address: <code>{token_address}</code>\n"  # Kopijuojamas tekstas
+                f"Token: {token_data.name} (${token_data.symbol})\n"  # Naudojame token_data
+                f"Address: <code>{token_data.address}</code>\n"  # Naudojame token_data
                 f"Probability: {probability*100:.1f}%\n\n"
                 f"Market Cap: ${token_data.market_cap:,.0f}\n"
                 f"Liquidity: ${token_data.liquidity:,.0f}\n"
@@ -2755,7 +2760,6 @@ class GemFinder:
         logger.info(f"[2025-01-31 13:08:54] GemFinder stopped")
         
     async def _handle_message(self, event: events.NewMessage.Event):
-        """Apdoroja naują pranešimą"""
         try:
             message = event.message.text
             message_id = event.message.id
@@ -2765,11 +2769,23 @@ class GemFinder:
                 
             logger.info(f"[2025-01-31 13:08:54] Processing message ID: {message_id}")
             
-            if "New" in message:
-                await self._handle_new_token(message)
-            elif "from" in message:
-                await self._handle_token_update(message)
+            # Patikriname ar tai naujas token'as
+            is_new_token = bool("🔥" in message and "New Trending" in message)
+            
+            token_addresses = self._extract_token_addresses(message)
+            if not token_addresses:
+                return
                 
+            token_address = token_addresses[0]
+            current_data = await self._collect_token_data(token_address)
+            if not current_data:
+                return
+                
+            if "New" in message or is_new_token:
+                await self.token_handler.handle_new_token(current_data)
+            else:
+                await self.token_handler.handle_token_update(token_address, current_data, is_new_token=is_new_token)
+            
             self.processed_messages.add(message_id)
             
         except Exception as e:
