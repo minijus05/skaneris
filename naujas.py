@@ -2735,7 +2735,7 @@ class GemFinder:
                         logger.error(f"[2025-02-03 18:07:45] Error checking token status: {e}")
                 
                 # 4. Atnaujiname ML modelį su duomenimis iš DB
-                logger.info(f"[2025-02-03 18:07:45] Retraining ML model with DB data...")
+                
                 await self.ml_analyzer.train_model()
                 
                 # 5. Atnaujiname duomenų bazės būseną
