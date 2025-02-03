@@ -199,7 +199,7 @@ class Config:
     
     # Gem detection settings
     MIN_GEM_PROBABILITY = 0.1
-    MIN_MC_FOR_GEM = 50000
+    MIN_MC_FOR_GEM = 30000
     MAX_MC_FOR_GEM = 1000000
     
     # ML modelio parametrai
@@ -522,16 +522,15 @@ class TokenHandler:
         """Siunčia pranešimą į Telegram"""
         try:
             if not self.telegram_client:
-                self.telegram_client = TelegramClient('gem_alert_session', 
-                                                    Config.TELEGRAM_API_ID, 
-                                                    Config.TELEGRAM_API_HASH)
-                await self.telegram_client.start()
+                logger.error(f"[2025-02-03 17:18:55] Telegram client not initialized")
+                return
                 
             await self.telegram_client.send_message(Config.TELEGRAM_DEST_CHAT1, message)
-            logger.info(f"[2025-02-03 14:44:23] Sent notification to Telegram")
+            logger.info(f"[2025-02-03 17:18:55] Sent notification to Telegram")
             
         except Exception as e:
-            logger.error(f"[2025-02-03 14:44:23] Error sending notification: {e}")
+            logger.error(f"[2025-02-03 17:18:55] Error sending notification: {e}")
+            logger.error(f"[2025-02-03 17:18:55] Error details: {str(e)}")
 
     async def check_inactive_tokens(self):
         """Tikrina ir pažymi neaktyvius token'us"""
@@ -1862,6 +1861,23 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"[{datetime.now(timezone.utc)}] Error getting failed tokens: {e}")
             return []
+    async def get_latest_token_update(self, token_address: str):
+        """Gauna paskutinį token'o atnaujinimą iš DB"""
+        try:
+            query = """
+            SELECT all_metrics 
+            FROM token_updates 
+            WHERE address = ? 
+            ORDER BY timestamp DESC 
+            LIMIT 1
+            """
+            result = await self.db.fetch_one(query, token_address)
+            if result:
+                return json.loads(result['all_metrics'])
+            return None
+        except Exception as e:
+            logger.error(f"[2025-02-03 18:07:45] Error getting latest token update: {e}")
+            return None
             
     async def mark_as_failed(self, token_address: str, reason: str):
         """Pažymi token'ą kaip nepavykusį"""
@@ -2639,64 +2655,121 @@ class GemFinder:
 
     async def initialize(self):
         """Inicializuoja visus komponentus"""
-        # Sukuriame telegram klientus
-        self.telegram = TelegramClient('gem_finder_session', 
-                                     Config.TELEGRAM_API_ID, 
-                                     Config.TELEGRAM_API_HASH)
-        self.scanner_client = TelegramClient('scanner_session',
-                                           Config.TELEGRAM_API_ID,
-                                           Config.TELEGRAM_API_HASH)
+        try:
+            # Sukuriame telegram klientus ir iš karto juos startuojame
+            logger.info(f"[2025-02-03 17:21:25] Initializing Telegram clients...")
+            
+            self.telegram = TelegramClient('gem_finder_session', 
+                                         Config.TELEGRAM_API_ID, 
+                                         Config.TELEGRAM_API_HASH)
+            
+            self.scanner_client = TelegramClient('scanner_session',
+                                               Config.TELEGRAM_API_ID,
+                                               Config.TELEGRAM_API_HASH)
+            
+            # Sukuriame alert klientą iš karto
+            self.alert_client = TelegramClient('gem_alert_session',
+                                             Config.TELEGRAM_API_ID,
+                                             Config.TELEGRAM_API_HASH)
+            
+            # Startuojame visus klientus
+            await self.telegram.start()
+            await self.scanner_client.start()
+            await self.alert_client.start()
+            
+            logger.info(f"[2025-02-03 17:21:25] All Telegram clients initialized")
 
-        # Pirma inicializuojame DB
-        self.db_manager = DatabaseManager()
-        await self.db_manager.setup_database()
-        logger.info(f"[2025-02-01 12:26:01] Database initialized")
-        
-        # Tada kuriame kitus komponentus su jau inicializuota DB
-        self.token_analyzer = TokenAnalyzer(self.db_manager, None)
-        self.ml_analyzer = MLAnalyzer(self.db_manager, self.token_analyzer)
-        self.token_analyzer.ml = self.ml_analyzer
-        self.token_handler = TokenHandler(self.db_manager, self.ml_analyzer)
-        
-        logger.info(f"[2025-02-01 12:26:01] GemFinder initialized")
+            # Pirma inicializuojame DB
+            self.db_manager = DatabaseManager()
+            await self.db_manager.setup_database()
+            logger.info(f"[2025-02-03 17:21:25] Database initialized")
+            
+            # Tada kuriame kitus komponentus
+            self.token_analyzer = TokenAnalyzer(self.db_manager, None)
+            self.ml_analyzer = MLAnalyzer(self.db_manager, self.token_analyzer)
+            self.token_analyzer.ml = self.ml_analyzer
+            self.token_handler = TokenHandler(self.db_manager, self.ml_analyzer)
+            
+            # Perduodame jau inicializuotą alert klientą
+            self.token_handler.telegram_client = self.alert_client
+            
+            logger.info(f"[2025-02-03 17:21:25] GemFinder initialized")
 
-        #await gem_finder.db_manager.show_database_contents()
+        except Exception as e:
+            logger.error(f"[2025-02-03 17:21:25] Error in initialization: {e}")
+            raise
 
     async def start(self):
         """Paleidžia GemFinder"""
-        # Pirma inicializuojame visus komponentus
-        await self.initialize()
-        
-        await self.telegram.start()
-        await self.scanner_client.start()
-        logger.info(f"[2025-02-01 12:26:01] GemFinder started")
-        
-        # Pradedame periodinį neaktyvių tokenų tikrinimą
-        asyncio.create_task(self._run_periodic_checks())
-        
-        # Patikriname duomenų bazės būseną
-        await self.db_manager.check_database()
-        
-        # Užkrauname istorinius duomenis
-        await self.ml_analyzer.train_model()
-        
-        # Registruojame message handler'į
-        @self.telegram.on(events.NewMessage(chats=Config.TELEGRAM_SOURCE_CHATS))
-        async def message_handler(event):
-            await self._handle_message(event)
+        try:
+            # Pirma inicializuojame visus komponentus
+            await self.initialize()
             
-        # Laukiame pranešimų
-        await self.telegram.run_until_disconnected()
+            logger.info(f"[2025-02-03 17:21:25] GemFinder started")
+            
+            # Pradedame periodinį neaktyvių tokenų tikrinimą
+            asyncio.create_task(self._run_periodic_checks())
+            
+            # Patikriname duomenų bazės būseną
+            await self.db_manager.check_database()
+            
+            
+            
+            # Registruojame message handler'į
+            @self.telegram.on(events.NewMessage(chats=Config.TELEGRAM_SOURCE_CHATS))
+            async def message_handler(event):
+                await self._handle_message(event)
+                
+            # Laukiame pranešimų
+            await self.telegram.run_until_disconnected()
+            
+        except Exception as e:
+            logger.error(f"[2025-02-03 17:21:25] Error starting GemFinder: {e}")
+            raise
 
     async def _run_periodic_checks(self):
-        """Paleidžia periodinius tikrinimus"""
+        """Atnaujina DB ir ML modelį periodiškai"""
         while True:
             try:
+                logger.info(f"[2025-02-03 18:07:45] Starting database and ML update...")
+                
+                # 1. Patikriname ir pažymime neaktyvius tokenus
                 await self.token_handler.check_inactive_tokens()
+                
+                # 2. Gauname visus tokenus iš DB
+                active_tokens = await self.db_manager.get_active_tokens()
+                successful_tokens = await self.db_manager.get_all_gems()
+                failed_tokens = await self.db_manager.get_failed_tokens()
+                
+                # 3. Patikriname ar aktyvūs tokenai tapo gems
+                for token in active_tokens:
+                    try:
+                        if not await self.db_manager.is_gem(token['address']):
+                            # Gauname tik paskutinį atnaujinimą iš DB
+                            latest_update = await self.db_manager.get_latest_token_update(token['address'])
+                            initial_data = await self.db_manager.get_initial_state(token['address'])
+                            
+                            if latest_update and initial_data:
+                                multiplier = latest_update['market_cap'] / initial_data.market_cap
+                                if multiplier >= 10:
+                                    await self.db_manager.mark_as_gem(token['address'])
+                                    logger.info(f"[2025-02-03 18:07:45] New gem found: {token['address']} ({multiplier:.2f}X)")
+                    except Exception as e:
+                        logger.error(f"[2025-02-03 18:07:45] Error checking token status: {e}")
+                
+                # 4. Atnaujiname ML modelį su duomenimis iš DB
+                logger.info(f"[2025-02-03 18:07:45] Retraining ML model with DB data...")
+                await self.ml_analyzer.train_model()
+                
+                # 5. Atnaujiname duomenų bazės būseną
+                await self.db_manager.check_database()
+                
+                logger.info(f"[2025-02-03 18:07:45] Database and ML update completed")
                 await asyncio.sleep(3600)  # Tikriname kas valandą
+                
             except Exception as e:
-                logger.error(f"[2025-02-01 10:08:58] Error in periodic checks: {e}")
-                await asyncio.sleep(60)  # Jei klaida, bandome vėl po minutės
+                logger.error(f"[2025-02-03 18:07:45] Error in periodic checks: {e}")
+                await asyncio.sleep(60)
 
     async def stop(self):
         """Sustabdo GemFinder"""
