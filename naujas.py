@@ -252,7 +252,8 @@ class TokenMetrics:
 
     mint_enabled: int = 0      # Vietoj bool = False
     freeze_enabled: int = 0    # Vietoj bool = False
-    owner_renounced: int = 0   # Vietoj bool = False
+    owner_renounced: int = 0
+    total_scans: int = 0      # Vietoj bool = False
     
     # Optional fields with default values
     ath_multiplier: float = 1.0
@@ -549,7 +550,7 @@ class TokenHandler:
                     
                     if time_difference.total_seconds() > 6 * 3600:
                         updates_query = "SELECT COUNT(*) as count FROM token_updates WHERE address = ?"
-                        update_count = await self.db.fetch_one(updates_query, token['address'])
+                        update_count = await self.db.fetch_one(updates_query, (token['address'],))
                         
                         if update_count['count'] == 0:
                             await self.db.mark_as_failed(
@@ -648,6 +649,13 @@ class MLAnalyzer:
                         float(features['security_metrics']['mint_risk']),
                         float(features['security_metrics']['freeze_risk']),
                         float(features['security_metrics']['overall_security_score'])
+                    ])
+
+                    # Scan metrics
+                    feature_vector.extend([
+                        float(features['scan_metrics']['scan_count']),
+                        float(features['scan_metrics']['scan_intensity']),
+                        float(features['scan_metrics']['scan_momentum'])
                     ])
                     
                     # Social metrics
@@ -775,55 +783,119 @@ class MLAnalyzer:
         """Prognozuoja token'o potencialą tapti gemu"""
         try:
             if token_data is None:
-                logger.error("[2025-02-03 12:44:18] Token data is None")
+                logger.error("[2025-02-03 16:31:24] Token data is None")
                 return 0.0
                 
             if not self.model:
-                logger.info("[2025-02-03 12:44:18] Model not found, training new model...")
+                logger.info("[2025-02-03 16:31:24] Model not found, training new model...")
                 await self.train_model()
                 if not self.model:
-                    logger.error("[2025-02-03 12:44:18] Failed to train model")
+                    logger.error("[2025-02-03 16:31:24] Failed to train model")
                     return 0.0
 
             # Analizuojame token'ą
             features = self.token_analyzer.prepare_features(token_data, [])
             if not features:
-                logger.error(f"[2025-02-03 12:44:18] Failed to analyze token {token_data.address}")
+                logger.error(f"[2025-02-03 16:31:24] Failed to analyze token {token_data.address}")
                 return 0.0
                 
-            # Konvertuojame į feature vector
+            # Naudojame tą patį feature vektorių formavimo būdą kaip train_model metode
             feature_vector = []
-            for category in ['basic_metrics', 'price_volume_metrics', 'holder_metrics', 
-                           'sniper_metrics', 'dev_metrics', 'social_metrics', 
-                           'security_metrics', 'wallet_behavior', 'risk_assessment']:
-                feature_vector.extend(list(features[category].values()))
+            
+            # Basic metrics
+            feature_vector.extend([
+                float(features['basic_metrics']['age_hours']),
+                float(features['basic_metrics']['market_cap_normalized']),
+                float(features['basic_metrics']['liquidity_ratio'])
+            ])
+            
+            # Price/Volume metrics
+            feature_vector.extend([
+                float(token_data.market_cap or 0),
+                float(token_data.liquidity or 0),
+                float(token_data.volume_1h or 0),
+                float(token_data.volume_24h or 0),
+                float(token_data.price_change_1h or 0),
+                float(token_data.price_change_24h or 0)
+            ])
+            
+            # Holder metrics
+            feature_vector.extend([
+                float(features['holder_metrics']['holder_distribution']),
+                float(features['holder_metrics']['value_per_holder']),
+                float(features['holder_metrics']['top_holder_risk'])
+            ])
+            
+            # Sniper metrics
+            feature_vector.extend([
+                float(features['sniper_metrics'].get('sniper_impact', 0)),
+                float(features['sniper_metrics'].get('whale_dominance', 0)),
+                float(features['sniper_metrics'].get('fish_ratio', 0)),
+                float(features['sniper_metrics'].get('sniper_behavior_pattern', 0))
+            ])
+            
+            # Dev metrics
+            feature_vector.extend([
+                float(features['dev_metrics']['dev_commitment']),
+                float(features['dev_metrics']['owner_risk']),
+                float(features['dev_metrics']['dev_sol_strength']),
+                float(features['dev_metrics']['dev_token_risk']),
+                float(features['dev_metrics']['ownership_score'])
+            ])
+            
+            # Security metrics
+            feature_vector.extend([
+                float(features['security_metrics']['contract_security']),
+                float(features['security_metrics']['lp_security']),
+                float(features['security_metrics']['mint_risk']),
+                float(features['security_metrics']['freeze_risk']),
+                float(features['security_metrics']['overall_security_score'])
+            ])
+
+            # Scan metrics
+            feature_vector.extend([
+                float(features['scan_metrics']['scan_count']),
+                float(features['scan_metrics']['scan_intensity']),
+                float(features['scan_metrics']['scan_momentum'])
+            ])
+            
+            # Social metrics
+            feature_vector.extend([
+                float(features['social_metrics']['social_presence']),
+                float(features['social_metrics']['has_twitter']),
+                float(features['social_metrics']['has_website']),
+                float(features['social_metrics']['has_telegram']),
+                float(features['social_metrics']['social_risk'])
+            ])
+            
+            # Risk assessment
+            feature_vector.extend([
+                float(features['risk_assessment']['overall_risk']),
+                float(features['risk_assessment']['pump_dump_risk']),
+                float(features['risk_assessment']['security_risk']),
+                float(features['risk_assessment']['holder_risk']),
+                float(features['risk_assessment']['dev_risk'])
+            ])
+            
+            # Contract flags
+            feature_vector.extend([
+                float(token_data.mint_enabled),
+                float(token_data.freeze_enabled),
+                float(token_data.owner_renounced)
+            ])
 
             X = np.array(feature_vector).reshape(1, -1)
             X_scaled = self.scaler.transform(X)
             
             if np.isnan(X_scaled).any():
-                logger.error("[2025-02-03 12:44:18] NaN values in prediction features")
+                logger.error("[2025-02-03 16:31:24] NaN values in prediction features")
                 return 0.0
                 
-            # Gauname predikciją
             probability = self.model.predict_proba(X_scaled)[0][1]
-            
-            # Išsami analizė
-            self._log_detailed_analysis(token_data, features, probability, X_scaled)
-            
-            # Atnaujiname statistiką
-            self.predictions_made += 1
-            self.prediction_history.append({
-                'token': token_data.address,
-                'timestamp': datetime.now(timezone.utc),
-                'probability': probability,
-                'features': features
-            })
-            
             return probability
-            
+                
         except Exception as e:
-            logger.error(f"[2025-02-03 12:44:18] Error predicting potential: {e}")
+            logger.error(f"[2025-02-03 16:31:24] Error predicting potential: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             return 0.0
@@ -996,6 +1068,11 @@ class MLAnalyzer:
             'has_website',
             'has_telegram',
             'social_risk',
+
+            # Scan Metrics
+            'scan_count',
+            'scan_intensity',
+            'scan_momentum',
 
             # Risk Assessment
             'overall_risk',
@@ -1296,6 +1373,27 @@ class DatabaseManager:
             return await self.db.fetch_all(query)
         except Exception as e:
             logger.error(f"[2025-02-03 15:17:34] Error in DatabaseManager.fetch_all: {e}")
+            logger.error(f"Query: {query}")
+            logger.error(f"Params: {params}")
+            raise
+
+    async def fetch_one(self, query: str, params=None):
+        """Gauna vieną rezultatą iš užklausos"""
+        try:
+            if not self.db:
+                await self.setup_database()
+                
+            # Išpakuojame tuple jei jis yra dvigubas
+            if isinstance(params, tuple) and len(params) == 1 and isinstance(params[0], tuple):
+                params = params[0]
+            
+            # Išpakuojame tuple jei jis yra viengubas su vienu elementu
+            if isinstance(params, tuple) and len(params) == 1:
+                params = params[0]
+                
+            return await self.db.fetch_one(query, params)
+        except Exception as e:
+            logger.error(f"[{datetime.now(timezone.utc)}] Error in DatabaseManager.fetch_one: {e}")
             logger.error(f"Query: {query}")
             logger.error(f"Params: {params}")
             raise
@@ -1859,6 +1957,13 @@ class TokenAnalyzer:
                 return {
                     # 1. Pagrindinė informacija ir jos analizė
                     'basic_metrics': self._analyze_basic_metrics(token),
+
+                    # Pridedame naują kategoriją
+                    'scan_metrics': {
+                        'scan_count': token.total_scans,
+                        'scan_intensity': token.total_scans / max(self._convert_age_to_hours(token.age), 1),  # Scans per hour
+                        'scan_momentum': 1.0 if token.total_scans > 100 else token.total_scans / 100.0  # Normalizuotas scan_count
+                    },
                     
                     # 2. Kainų ir volume analizė
                     'price_volume_metrics': self._analyze_price_volume(token, updates),
@@ -2643,8 +2748,7 @@ class GemFinder:
             # Apdorojame naują tokeną per TokenHandler
             initial_prediction = await self.token_handler.handle_new_token(token_data)
             
-            # Tikriname potencialą
-            await self.token_handler.check_token_potential(token_data)
+            
             
             logger.info(f"[2025-02-03 14:25:39] Token {token_address} processed with initial prediction: {initial_prediction:.2f}")
 
@@ -2778,7 +2882,7 @@ class GemFinder:
                                 name=soul_data.get('name', 'Unknown').replace('**', '').replace('\u200e', ''),
                                 symbol=soul_data.get('symbol', 'Unknown'),
                                 age=soul_data.get('age', '0d'),
-                                
+                                total_scans=soul_data.get('total_scans', 0),
                                 market_cap=soul_data.get('market_cap', 0.0),
                                 liquidity=soul_data.get('liquidity', {}).get('usd', 0.0),
                                 volume_1h=soul_data.get('volume', {}).get('1h', 0.0),
