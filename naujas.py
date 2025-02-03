@@ -549,7 +549,7 @@ class TokenHandler:
                     
                     if time_difference.total_seconds() > 6 * 3600:
                         updates_query = "SELECT COUNT(*) as count FROM token_updates WHERE address = ?"
-                        update_count = await self.db.fetch_one(updates_query, (token['address'],))
+                        update_count = await self.db.fetch_one(updates_query, token['address'])
                         
                         if update_count['count'] == 0:
                             await self.db.mark_as_failed(
@@ -1284,6 +1284,22 @@ class DatabaseManager:
             await self.db.connect()  # Pirma prisijungiame
             self.is_setup = True
             logger.info(f"[{datetime.now(timezone.utc)}] Database setup completed")
+
+    async def fetch_all(self, query: str, params=None):
+        """Gauna visus rezultatus iš užklausos"""
+        try:
+            if not self.db:
+                await self.setup_database()
+            # Perduodame params tik jei jie yra
+            if params is not None:
+                return await self.db.fetch_all(query, params)
+            return await self.db.fetch_all(query)
+        except Exception as e:
+            logger.error(f"[2025-02-03 15:17:34] Error in DatabaseManager.fetch_all: {e}")
+            logger.error(f"Query: {query}")
+            logger.error(f"Params: {params}")
+            raise
+            
         
         
                
