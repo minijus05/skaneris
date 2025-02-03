@@ -184,7 +184,7 @@ class Config:
     TELEGRAM_API_HASH = 'bd0054bc5393af360bc3930a27403c33'
     TELEGRAM_SOURCE_CHATS = ['@solearlytrending', '@botubotass']
     TELEGRAM_DEST_CHAT = '@smartas1'
-    TELEGRAM_DEST_CHAT1 = '@smartas1'
+    TELEGRAM_DEST_CHAT1 = '@testasmano'
     
     # Scanner settings
     SCANNER_GROUP = '@skaneriss'
@@ -198,7 +198,7 @@ class Config:
     DB_PATH = 'gem_finder.db'
     
     # Gem detection settings
-    MIN_GEM_PROBABILITY = 0.7
+    MIN_GEM_PROBABILITY = 0.1
     MIN_MC_FOR_GEM = 50000
     MAX_MC_FOR_GEM = 1000000
     
@@ -484,388 +484,699 @@ class MLAnalyzer:
         self.db = db_manager
         self.token_analyzer = token_analyzer
         self.model = None
-        self.historical_data = None
-        self.telegram_client = None
         self.scaler = StandardScaler()
         
-        # Jei token_analyzer neperduotas, sukuriame naują
+        # Performance tracking
+        self.predictions_made = 0
+        self.successful_predictions = 0
+        self.prediction_history = []  # Saugosime predikcijų istoriją
+        
         if self.token_analyzer is None:
             self.token_analyzer = TokenAnalyzer(db_manager, self)
 
-        # NAUJAS: Pridedame counters ML kokybės stebėjimui
-        self.predictions_made = 0
-        self.successful_predictions = 0
-        
-    async def load_historical_data(self):
-        """Užkrauna istorinius duomenis iš duomenų bazės"""
-        try:
-            # Gauname visus gems ir failed tokens
-            gems = await self.db.get_all_gems()
-            failed_tokens = await self.db.get_failed_tokens()
-            
-            if not gems and not failed_tokens:
-                logger.info("[2025-02-01 20:37:40] No historical data found")
-                return
-
-            # Gauname pradinius duomenis
-            historical_data = []
-            
-            # Apdorojame gems
-            for gem in gems:
-                initial_state = await self.db.get_initial_state(gem['address'])
-                if initial_state:
-                    historical_data.append(initial_state)
-                    
-            # Apdorojame failed tokens
-            for token in failed_tokens:
-                initial_state = await self.db.get_initial_state(token['address'])
-                if initial_state:
-                    historical_data.append(initial_state)
-
-            self.historical_data = historical_data
-            logger.info(f"[2025-02-01 20:37:40] Loaded historical records - Gems: {len(gems)}, Failed: {len(failed_tokens)}")
-
-            # Patikriname duomenų kokybę prieš apmokymą
-            if len(historical_data) >= Config.MIN_TRAINING_SAMPLES:
-                # Patikriname ar yra pakankamai įvairių duomenų
-                unique_addresses = len(set(token.address for token in historical_data))
-                logger.info(f"[2025-02-01 20:37:40] Found {unique_addresses} unique tokens in historical data")
-                await self.train_model()
-                
-        except Exception as e:
-            logger.error(f"[2025-02-01 20:37:40] Error loading historical data: {e}")
-        
     async def train_model(self):
-        """Treniruoja modelį naudojant sėkmingus ir nepavykusius tokenus"""
+        """Treniruoja modelį naudojant VISUS pradinius token'ų duomenis"""
         try:
-            # Gauname tokenus
             successful_tokens = await self.db.get_all_gems()
             failed_tokens = await self.db.get_failed_tokens()
             
-            logger.info(f"[2025-01-31 23:10:45] Training model with {len(successful_tokens)} successful and {len(failed_tokens)} failed tokens")
+            logger.info(f"[2025-02-03 13:21:21] Starting model training with {len(successful_tokens)} gems and {len(failed_tokens)} failed tokens")
             
-            # NAUJAS: Minimalaus duomenų kiekio patikrinimas
-            if len(successful_tokens) < Config.MIN_TRAINING_SAMPLES or len(failed_tokens) < Config.MIN_TRAINING_SAMPLES:
-                logger.warning(f"[2025-01-31 23:10:45] Not enough training data. Need at least {Config.MIN_TRAINING_SAMPLES} samples of each type.")
+            def process_features(token_metrics, features):
+                """Helper funkcija feature vektoriaus formavimui"""
+                try:
+                    feature_vector = []
+                    
+                    # Basic metrics
+                    feature_vector.extend([
+                        float(features['basic_metrics']['age_hours']),
+                        float(features['basic_metrics']['market_cap_normalized']),
+                        float(features['basic_metrics']['liquidity_ratio'])
+                    ])
+                    
+                    # Price/Volume metrics
+                    feature_vector.extend([
+                        float(token_metrics.market_cap or 0),
+                        float(token_metrics.liquidity or 0),
+                        float(token_metrics.volume_1h or 0),
+                        float(token_metrics.volume_24h or 0),
+                        float(token_metrics.price_change_1h or 0),
+                        float(token_metrics.price_change_24h or 0)
+                    ])
+                    
+                    # Holder metrics
+                    feature_vector.extend([
+                        float(features['holder_metrics']['holder_distribution']),
+                        float(features['holder_metrics']['value_per_holder']),
+                        float(features['holder_metrics']['top_holder_risk'])
+                    ])
+                    
+                    # Sniper metrics
+                    feature_vector.extend([
+                        float(features['sniper_metrics'].get('sniper_impact', 0)),
+                        float(features['sniper_metrics'].get('whale_dominance', 0)),
+                        float(features['sniper_metrics'].get('fish_ratio', 0)),
+                        float(features['sniper_metrics'].get('sniper_behavior_pattern', 0))
+                    ])
+                    
+                    # Dev metrics
+                    feature_vector.extend([
+                        float(features['dev_metrics']['dev_commitment']),
+                        float(features['dev_metrics']['owner_risk']),
+                        float(features['dev_metrics']['dev_sol_strength']),
+                        float(features['dev_metrics']['dev_token_risk']),
+                        float(features['dev_metrics']['ownership_score'])
+                    ])
+                    
+                    # Security metrics
+                    feature_vector.extend([
+                        float(features['security_metrics']['contract_security']),
+                        float(features['security_metrics']['lp_security']),
+                        float(features['security_metrics']['mint_risk']),
+                        float(features['security_metrics']['freeze_risk']),
+                        float(features['security_metrics']['overall_security_score'])
+                    ])
+                    
+                    # Social metrics
+                    feature_vector.extend([
+                        float(features['social_metrics']['social_presence']),
+                        float(features['social_metrics']['has_twitter']),
+                        float(features['social_metrics']['has_website']),
+                        float(features['social_metrics']['has_telegram']),
+                        float(features['social_metrics']['social_risk'])
+                    ])
+                    
+                    # Risk assessment
+                    feature_vector.extend([
+                        float(features['risk_assessment']['overall_risk']),
+                        float(features['risk_assessment']['pump_dump_risk']),
+                        float(features['risk_assessment']['security_risk']),
+                        float(features['risk_assessment']['holder_risk']),
+                        float(features['risk_assessment']['dev_risk'])
+                    ])
+                    
+                    # Contract flags
+                    feature_vector.extend([
+                        float(token_metrics.mint_enabled),
+                        float(token_metrics.freeze_enabled),
+                        float(token_metrics.owner_renounced)
+                    ])
+                    
+                    return feature_vector
+                except Exception as e:
+                    logger.error(f"[2025-02-03 13:21:21] Error processing features: {e}")
+                    return None
+
+            # Process successful tokens
+            X_success = []
+            y_success = []
+            logger.info(f"[2025-02-03 13:21:21] Processing successful tokens...")
+            
+            for token in successful_tokens:
+                try:
+                    initial_state = json.loads(token['initial_parameters'])
+                    token_metrics = TokenMetrics(**initial_state)
+                    features = self.token_analyzer.prepare_features(token_metrics, [])
+                    
+                    if not features:
+                        continue
+                        
+                    feature_vector = process_features(token_metrics, features)
+                    if feature_vector:
+                        X_success.append(feature_vector)
+                        y_success.append(1)  # 1 = success
+                        logger.info(f"[2025-02-03 13:21:21] Processed gem {token['address']} - Features: {len(feature_vector)}")
+                        
+                except Exception as e:
+                    logger.error(f"[2025-02-03 13:21:21] Error processing gem {token['address']}: {e}")
+                    continue
+
+            # Process failed tokens
+            X_failed = []
+            y_failed = []
+            logger.info(f"[2025-02-03 13:21:21] Processing failed tokens...")
+            
+            for token in failed_tokens:
+                try:
+                    initial_state = json.loads(token['initial_parameters'])
+                    token_metrics = TokenMetrics(**initial_state)
+                    features = self.token_analyzer.prepare_features(token_metrics, [])
+                    
+                    if not features:
+                        continue
+                        
+                    feature_vector = process_features(token_metrics, features)
+                    if feature_vector:
+                        X_failed.append(feature_vector)
+                        y_failed.append(0)  # 0 = failed
+                        
+                except Exception as e:
+                    logger.error(f"[2025-02-03 13:21:21] Error processing failed token {token['address']}: {e}")
+                    continue
+
+            # Combine and normalize data
+            if not X_success or not X_failed:
+                logger.error("[2025-02-03 13:21:21] No valid training data")
                 return
-            
-            # Konvertuojame į features
-            X_success = self._convert_to_features([await self.db.get_initial_state(t['address']) for t in successful_tokens])
-            X_failed = self._convert_to_features([await self.db.get_initial_state(t['address']) for t in failed_tokens])
-            
-            if len(X_success) == 0 or len(X_failed) == 0:
-                logger.warning("[2025-01-31 23:10:45] Not enough data for training")
-                return
-            
-            # Sujungiame features ir labels
+                
             X = np.vstack([X_success, X_failed])
-            y = np.hstack([np.ones(len(X_success)), np.zeros(len(X_failed))])
+            y = np.hstack([y_success, y_failed])
             
-            # NAUJAS: Patikriname ar nėra nan reikšmių
-            if np.isnan(X).any():
-                logger.error("[2025-01-31 23:10:45] NaN values in training data")
-                return
+            # Normalize features
+            X_scaled = self.scaler.fit_transform(X)
             
-            # Treniruojame modelį
+            # Train model
             self.model = RandomForestClassifier(
                 n_estimators=100,
-                max_depth=5,
+                max_depth=10,
                 min_samples_split=4,
                 min_samples_leaf=2,
                 random_state=42
             )
-            self.model.fit(X, y)
             
-            logger.info(f"[2025-01-31 23:10:45] Model trained successfully")
+            self.model.fit(X_scaled, y)
             
-        except Exception as e:
-            logger.error(f"[2025-01-31 23:10:45] Error training model: {e}")
-        
-    def _convert_to_features(self, tokens_data: List[TokenMetrics]) -> np.array:
-        """Konvertuoja TokenMetrics į feature array naudojant TokenAnalyzer"""
-        try:
-            if not tokens_data:
-                logger.warning(f"[2025-02-01 21:04:49] No tokens data provided")
-                return np.array([])
-                
-            features = []
-            for token in tokens_data:
-                try:
-                    if token is None:
-                        continue
-                        
-                    # Gauname išanalizuotus features
-                    analyzed = self.token_analyzer.prepare_features(token, [])
-                    if not analyzed:  # Pridėtas patikrinimas
-                        logger.warning(f"[2025-02-01 21:04:49] Failed to analyze features for {token.address}")
-                        continue
-
-                    # Apsauga nuo division by zero
-                    market_cap = max(token.market_cap, 0.0001)
-                    liquidity = max(token.liquidity, 0.0001)
-                    volume_1h = max(token.volume_1h, 0.0001)
-                    volume_24h = max(token.volume_24h, 0.0001)
-
-                    # 24h duomenų patikrinimas
-                    has_24h_data = token.volume_24h > 0 or token.price_change_24h != 0
-                    volume_24h = max(token.volume_24h, 0.0001) if has_24h_data else -1
-                    price_change_24h = token.price_change_24h if has_24h_data else -999
-
-                    # Konstruojame feature vektorių
-                    feature_vector = [
-                        analyzed['basic_metrics']['age_hours'],
-                        analyzed['basic_metrics']['market_cap_normalized'],
-                        analyzed['basic_metrics']['liquidity_ratio'],
-                        market_cap,
-                        liquidity,
-                        volume_1h,
-                        volume_24h,
-                        token.price_change_1h,
-                        price_change_24h,  # Pakeista į modifikuotą reikšmę
-                        float(has_24h_data),
-                        analyzed['holder_metrics']['holder_distribution'],
-                        analyzed['holder_metrics']['value_per_holder'],
-                        analyzed['holder_metrics']['top_holder_risk'],
-                        analyzed['sniper_metrics']['sniper_impact'],
-                        analyzed['sniper_metrics']['whale_dominance'],
-                        analyzed['sniper_metrics']['fish_ratio'],
-                        analyzed['sniper_metrics']['sniper_diversity'],
-                        analyzed['dev_metrics']['dev_commitment'],
-                        analyzed['dev_metrics']['owner_risk'],
-                        analyzed['dev_metrics']['dev_sol_strength'],
-                        analyzed['dev_metrics']['dev_token_risk'],
-                        analyzed['dev_metrics']['ownership_score'],
-                        analyzed['security_metrics']['contract_security'],
-                        analyzed['security_metrics']['lp_security'],
-                        analyzed['security_metrics']['mint_risk'],
-                        analyzed['security_metrics']['freeze_risk'],
-                        analyzed['security_metrics']['overall_security_score'],
-                        analyzed['social_metrics']['social_presence'],
-                        analyzed['social_metrics']['has_twitter'],
-                        analyzed['social_metrics']['has_website'],
-                        analyzed['social_metrics']['has_telegram'],
-                        analyzed['social_metrics']['social_risk'],
-                        analyzed['risk_assessment']['overall_risk'],
-                        analyzed['risk_assessment']['pump_dump_risk'],
-                        analyzed['risk_assessment']['security_risk'],
-                        analyzed['risk_assessment']['holder_risk'],
-                        analyzed['risk_assessment']['dev_risk'],
-                        float(token.mint_enabled),
-                        float(token.freeze_enabled),
-                        float(token.owner_renounced)
-                    ]
-                    features.append(feature_vector)
-                    
-                except Exception as e:
-                    logger.error(f"[2025-02-01 21:04:49] Error processing token {token.address}: {str(e)}")
-                    continue
-                    
-            if not features:
-                logger.warning(f"[2025-02-01 21:04:49] No features were created")
-                return np.array([])
-                
-            # Konvertuojame į numpy array
-            features_array = np.array(features)
+            # Analyze feature importance
+            feature_names = self._get_all_feature_names()
+            importances = self.model.feature_importances_
             
-            # Patikriname ar nėra nan reikšmių prieš normalizavimą
-            if np.isnan(features_array).any():
-                logger.error(f"[2025-02-01 21:04:49] NaN values in features before normalization")
-                return np.array([])
+            logger.info("\n=== FEATURE IMPORTANCE ANALYSIS ===")
+            feature_importance = list(zip(feature_names, importances))
+            feature_importance.sort(key=lambda x: x[1], reverse=True)
             
-            # Normalizuojame features
-            normalized = self.scaler.fit_transform(features_array)
+            logger.info("Top 20 Most Important Features:")
+            for name, importance in feature_importance[:20]:
+                logger.info(f"{name}: {importance*100:.2f}%")
             
-            # Patikriname normalizuotas reikšmes
-            if np.isnan(normalized).any():
-                logger.error(f"[2025-02-01 21:04:49] NaN values after normalization")
-                return np.array([])
-                
-            logger.info(f"[2025-02-01 21:04:49] Successfully converted {len(features)} tokens to features")
-            return normalized
+            # Calculate training accuracy
+            train_accuracy = self.model.score(X_scaled, y)
+            logger.info(f"[2025-02-03 13:21:21] Training Accuracy: {train_accuracy*100:.2f}%")
+            logger.info(f"[2025-02-03 13:21:21] Model successfully trained with {len(X)} samples")
             
         except Exception as e:
-            logger.error(f"[2025-02-01 21:04:49] Error converting features: {e}")
-            return np.array([])
-            
-           
+            logger.error(f"[2025-02-03 13:21:21] Error training model: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+
     async def predict_potential(self, token_data: TokenMetrics) -> float:
-        """Prognozuoja token'o potencialą tapti gem"""
+        """Prognozuoja token'o potencialą tapti gemu"""
         try:
-            # NAUJAS: Patikriname ar token_data validus
             if token_data is None:
-                logger.error(f"[2025-01-31 23:10:45] Token data is None")
+                logger.error("[2025-02-03 12:44:18] Token data is None")
                 return 0.0
                 
             if not self.model:
+                logger.info("[2025-02-03 12:44:18] Model not found, training new model...")
                 await self.train_model()
                 if not self.model:
+                    logger.error("[2025-02-03 12:44:18] Failed to train model")
                     return 0.0
-                
-            features = self._convert_to_features([token_data])
-            if len(features) == 0:
+
+            # Analizuojame token'ą
+            features = self.token_analyzer.prepare_features(token_data, [])
+            if not features:
+                logger.error(f"[2025-02-03 12:44:18] Failed to analyze token {token_data.address}")
                 return 0.0
                 
-            # NAUJAS: Patikriname features prieš predikciją
-            if np.isnan(features).any():
-                logger.error(f"[2025-01-31 23:10:45] NaN values in prediction features")
-                return 0.0
-                
-            probability = self.model.predict_proba(features)[0][1]  # Imame teigiamos klasės tikimybę
+            # Konvertuojame į feature vector
+            feature_vector = []
+            for category in ['basic_metrics', 'price_volume_metrics', 'holder_metrics', 
+                           'sniper_metrics', 'dev_metrics', 'social_metrics', 
+                           'security_metrics', 'wallet_behavior', 'risk_assessment']:
+                feature_vector.extend(list(features[category].values()))
+
+            X = np.array(feature_vector).reshape(1, -1)
+            X_scaled = self.scaler.transform(X)
             
-            # NAUJAS: Atnaujiname prediction metrics
+            if np.isnan(X_scaled).any():
+                logger.error("[2025-02-03 12:44:18] NaN values in prediction features")
+                return 0.0
+                
+            # Gauname predikciją
+            probability = self.model.predict_proba(X_scaled)[0][1]
+            
+            # Išsami analizė
+            self._log_detailed_analysis(token_data, features, probability, X_scaled)
+            
+            # Atnaujiname statistiką
             self.predictions_made += 1
+            self.prediction_history.append({
+                'token': token_data.address,
+                'timestamp': datetime.now(timezone.utc),
+                'probability': probability,
+                'features': features
+            })
             
-            # Jei tikimybė aukšta, siunčiame žinutę
-            if probability >= Config.MIN_GEM_PROBABILITY:
-                await self._send_potential_gem_alert(token_data, probability)
-                
             return probability
             
         except Exception as e:
-            logger.error(f"[2025-01-31 23:10:45] Error predicting potential: {e}")
+            logger.error(f"[2025-02-03 12:44:18] Error predicting potential: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return 0.0
-            
-    async def _send_potential_gem_alert(self, token_data: TokenMetrics, probability: float):
-        """Siunčia žinutę apie potencialų gem"""
+
+    def _log_detailed_analysis(self, token_data: TokenMetrics, features: Dict, probability: float, X_scaled: np.array):
+        """Logina išsamią token'o analizę"""
         try:
-            if not self.telegram_client:
-                self.telegram_client = TelegramClient('ml_alert_session', 
-                                                    Config.TELEGRAM_API_ID, 
-                                                    Config.TELEGRAM_API_HASH)
-                await self.telegram_client.start()
+            logger.info(f"\n=== TOKEN PREDICTION ANALYSIS ===")
+            logger.info(f"Token: {token_data.symbol} ({token_data.address})")
+            logger.info(f"Analysis Time: {datetime.now(timezone.utc)}")
+            logger.info(f"Gem Probability: {probability*100:.2f}%")
             
-            # NAUJAS: Patikriname ar turime visus reikalingus duomenis
-            name = token_data.name or "Unknown"
-            symbol = token_data.symbol or "Unknown"
-            address = token_data.address or "Unknown"
+            # Bazinė informacija
+            logger.info("\n🔍 BASIC METRICS")
+            logger.info(f"Age: {token_data.age}")
+            logger.info(f"Market Cap: ${token_data.market_cap:,.0f}")
+            logger.info(f"Liquidity: ${token_data.liquidity:,.0f}")
+            logger.info(f"Volume 1h: ${token_data.volume_1h:,.0f}")
             
-            # Formatuojame žinutę
-            message = (
-                f"🎯 POTENTIAL GEM DETECTED! 🎯\n\n"
-                f"Token: {name} (${symbol})\n"
-                f"Address: {address}\n\n"
-                f"Current Stats:\n"
-                f"Market Cap: ${token_data.market_cap:,.0f}\n"
-                f"Liquidity: ${token_data.liquidity:,.0f}\n"
-                f"Holders: {token_data.holders_count}\n"
-                f"Volume 1h: ${token_data.volume_1h:,.0f}\n\n"
-                f"ML Confidence: {probability*100:.1f}%\n\n"
-                f"Risk Metrics:\n"
-                f"• Top Holder %: {token_data.top_holder_percentage:.1f}%\n"
-                f"• Sniper Count: {token_data.sniper_count}\n"
-                f"• Dev Token %: {token_data.dev_token_percentage:.1f}%\n\n"
-                f"Links:\n"
-                f"🐦 Twitter: {token_data.twitter_url or 'N/A'}\n"
-                f"🌐 Website: {token_data.website_url or 'N/A'}"
-            )
+            # Holders & Snipers
+            logger.info("\n👥 HOLDERS & SNIPERS")
+            logger.info(f"Total Holders: {token_data.holders_count}")
+            logger.info(f"Top Holder %: {token_data.top_holder_percentage:.1f}%")
+            logger.info(f"Sniper Count: {token_data.sniper_count}")
             
-            await self.telegram_client.send_message(Config.TELEGRAM_DEST_CHAT, message)
-            logger.info(f"[2025-01-31 23:10:45] Sent potential gem alert for: {address}")
+            # Security Metrics
+            logger.info("\n🔒 SECURITY STATUS")
+            logger.info(f"• Contract Security: {features['security_metrics']['contract_security']:.2f}/1.0")
+            logger.info(f"• LP Security: {features['security_metrics']['lp_security']:.2f}/1.0")
+            logger.info(f"• Overall Security: {features['security_metrics']['overall_security_score']:.2f}/1.0")
+            
+            # Risk Assessment
+            logger.info("\n⚠️ RISK ASSESSMENT")
+            for risk_type, risk_value in features['risk_assessment'].items():
+                risk_level = "LOW" if risk_value < 0.3 else "MEDIUM" if risk_value < 0.7 else "HIGH"
+                logger.info(f"• {risk_type}: {risk_value:.2f} ({risk_level})")
+            
+            # Feature Impact Analysis
+            self._log_feature_impact(X_scaled[0])
+            
+            # Final Decision
+            self._log_decision_summary(probability, features)
             
         except Exception as e:
-            logger.error(f"[2025-01-31 23:10:45] Error sending potential gem alert: {e}")
+            logger.error(f"[2025-02-03 12:44:18] Error in detailed analysis: {e}")
 
-    def _get_feature_names(self) -> List[str]:
-        """Grąžina feature pavadinimų sąrašą"""
-        return [
-            # Basic metrics
+    def _log_feature_impact(self, feature_values: np.array):
+        """Logina feature'ų įtaką sprendimui"""
+        try:
+            feature_names = self._get_all_feature_names()
+            importances = self.model.feature_importances_
+            
+            impacts = []
+            for name, value, importance in zip(feature_names, feature_values, importances):
+                impact = abs(value * importance)
+                impacts.append((name, value, importance, impact))
+            
+            impacts.sort(key=lambda x: x[3], reverse=True)
+            
+            logger.info("\n📊 FEATURE IMPACT ANALYSIS")
+            logger.info("Top 5 Influencing Factors:")
+            for name, value, importance, impact in impacts[:5]:
+                direction = "POSITIVE" if value > 0 else "NEGATIVE"
+                logger.info(f"• {name}:")
+                logger.info(f"  - Impact: {impact:.3f} ({direction})")
+                logger.info(f"  - Importance: {importance*100:.1f}%")
+                
+        except Exception as e:
+            logger.error(f"[2025-02-03 12:44:18] Error in feature impact analysis: {e}")
+
+    def _log_decision_summary(self, probability: float, features: Dict):
+        """Logina galutinį sprendimą"""
+        try:
+            logger.info("\n🎯 FINAL ASSESSMENT")
+            if probability >= Config.MIN_GEM_PROBABILITY:
+                logger.info("✅ HIGH POTENTIAL GEM")
+                positive_factors = []
+                for metric_type, metrics in features.items():
+                    for name, value in metrics.items():
+                        if isinstance(value, (int, float)) and value > 0.7:
+                            positive_factors.append(f"{name} ({value:.2f})")
+                logger.info(f"Main positive factors: {', '.join(positive_factors[:3])}")
+            else:
+                logger.info("❌ LOW POTENTIAL")
+                concerns = []
+                for metric_type, metrics in features.items():
+                    for name, value in metrics.items():
+                        if isinstance(value, (int, float)) and value < 0.3:
+                            concerns.append(f"{name} ({value:.2f})")
+                logger.info(f"Main concerns: {', '.join(concerns[:3])}")
+                
+        except Exception as e:
+            logger.error(f"[2025-02-03 12:44:18] Error in decision summary: {e}")
+
+    async def update_model_with_new_gem(self, token_data: TokenMetrics):
+        """Atnaujina modelį su nauju gem"""
+        try:
+            if token_data is None:
+                logger.error(f"[2025-02-03 12:44:18] Cannot update model - token data is None")
+                return
+
+            # Atnaujiname statistiką
+            self.successful_predictions += 1
+            
+            # Retrainuojame modelį su naujais duomenimis
+            await self.train_model()
+            
+            # Loginame accuracy
+            if self.predictions_made > 0:
+                accuracy = (self.successful_predictions / self.predictions_made) * 100
+                logger.info(f"[2025-02-03 12:44:18] Current model accuracy: {accuracy:.2f}%")
+                logger.info(f"[2025-02-03 12:44:18] Total predictions: {self.predictions_made}")
+                logger.info(f"[2025-02-03 12:44:18] Successful predictions: {self.successful_predictions}")
+            
+            # Analizuojame features
+            await self.analyze_success_patterns()
+            await self.analyze_trend_changes()
+            await self.analyze_feature_correlations()
+            
+        except Exception as e:
+            logger.error(f"[2025-02-03 12:44:18] Error updating model: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+
+    def _get_all_feature_names(self) -> List[str]:
+        """Grąžina VISŲ features pavadinimus"""
+        feature_names = [
+            # Basic Metrics
             'age_hours',
             'market_cap_normalized',
             'liquidity_ratio',
-            
-            # Price/Volume metrics
             'market_cap',
-            'liquidity',
+            'liquidity', 
             'volume_1h',
             'volume_24h',
             'price_change_1h',
             'price_change_24h',
-            
-            # Holder metrics
+            'has_24h_data',
+
+            # Holder Metrics
             'holder_distribution',
             'value_per_holder',
+            'holder_retention', 
             'top_holder_risk',
-            
-            # Sniper metrics
+
+            # Sniper Metrics
             'sniper_impact',
             'whale_dominance',
             'fish_ratio',
             'sniper_diversity',
-            
-            # Dev metrics
+            'sniper_behavior_pattern',
+
+            # Dev Metrics
             'dev_commitment',
             'owner_risk',
             'dev_sol_strength',
             'dev_token_risk',
             'ownership_score',
-            
-            # Security metrics
+
+            # Security Metrics 
             'contract_security',
             'lp_security',
             'mint_risk',
             'freeze_risk',
             'overall_security_score',
-            
-            # Social metrics
+
+            # Social Metrics
             'social_presence',
             'has_twitter',
             'has_website',
             'has_telegram',
             'social_risk',
-            
-            # Risk metrics
+
+            # Risk Assessment
             'overall_risk',
-            'pump_dump_risk',
+            'pump_dump_risk', 
             'security_risk',
             'holder_risk',
             'dev_risk',
-            
-            # Contract flags
+
+            # Contract Flags
             'mint_enabled',
             'freeze_enabled',
             'owner_renounced'
         ]
-            
-    async def update_model_with_new_gem(self, token_data: TokenMetrics):
-        """Atnaujina modelį su nauju gem"""
-        try:
-            # NAUJAS: Patikrinimas ar token_data validus
-            if token_data is None:
-                logger.error(f"[2025-02-01 09:06:21] Cannot update model - token data is None")
-                return
+
+        # Debug info
+        logger.info(f"\n=== FEATURE LIST ({len(feature_names)} total) ===")
+        for i, feature in enumerate(feature_names):
+            logger.info(f"{i+1}. {feature}")
+
+        return feature_names
+
+async def analyze_success_patterns(self):
+    """Analizuoja sėkmingų gemų šablonus ir laiko faktorius"""
+    try:
+        logger.info("[2025-02-03 12:46:07] Starting success pattern analysis...")
+        successful_tokens = await self.db.get_all_gems()
+        
+        # Grupuojame pagal laiką iki 10x
+        time_groups = {
+            'quick': [],    # < 1 valanda
+            'medium': [],   # 1-6 valandos
+            'slow': []      # > 6 valandos
+        }
+        
+        patterns = {
+            'quick': {},
+            'medium': {},
+            'slow': {}
+        }
+        
+        for token in successful_tokens:
+            try:
+                time_to_10x = token['time_to_10x']
+                initial_state = json.loads(token['initial_parameters'])
+                token_metrics = TokenMetrics(**initial_state)
                 
-            if not self.historical_data:
-                self.historical_data = []
-            
-            self.historical_data.append(token_data)
-            
-            # NAUJAS: Atnaujiname successful predictions metriką
-            self.successful_predictions += 1
-            
-            # Jei turime pakankamai duomenų, atnaujiname modelį
-            if len(self.historical_data) >= Config.MIN_TRAINING_SAMPLES:
-                await self.train_model()
-                logger.info(f"[2025-02-01 09:06:21] Model updated with new gem: {token_data.address}")
+                # Nustatome grupę
+                if time_to_10x < 3600:  # < 1h
+                    group = 'quick'
+                elif time_to_10x < 21600:  # < 6h
+                    group = 'medium'
+                else:
+                    group = 'slow'
+                    
+                time_groups[group].append(token)
                 
-                # NAUJAS: Loginame prediction accuracy
-                if self.predictions_made > 0:
-                    accuracy = (self.successful_predictions / self.predictions_made) * 100
-                    logger.info(f"[2025-02-01 09:06:21] Current model accuracy: {accuracy:.2f}%")
-                    logger.info(f"[2025-02-01 09:06:21] Total predictions: {self.predictions_made}")
-                    logger.info(f"[2025-02-01 09:06:21] Successful predictions: {self.successful_predictions}")
+                # Analizuojame kiekvienos grupės patterns
+                features = self.token_analyzer.prepare_features(token_metrics, [])
+                if not features:
+                    continue
                     
-                # NAUJAS: Feature importance analizė
-                if self.model:
-                    features = self._get_feature_names()
-                    importances = self.model.feature_importances_
-                    sorted_idx = np.argsort(importances)
-                    top_features = [(features[i], importances[i]) for i in sorted_idx[-5:]]
-                    logger.info(f"[2025-02-01 09:06:21] Top 5 important features:")
-                    for feature, importance in reversed(top_features):
-                        logger.info(f"[2025-02-01 09:06:21] - {feature}: {importance:.4f}")
+                if group not in patterns:
+                    patterns[group] = {
+                        'market_caps': [],
+                        'liquidities': [],
+                        'holder_counts': [],
+                        'sniper_counts': [],
+                        'security_scores': [],
+                        'social_scores': [],
+                        'risk_scores': []
+                    }
                     
-        except Exception as e:
-            logger.error(f"[2025-02-01 09:06:21] Error updating model: {e}")
+                patterns[group]['market_caps'].append(token_metrics.market_cap)
+                patterns[group]['liquidities'].append(token_metrics.liquidity)
+                patterns[group]['holder_counts'].append(token_metrics.holders_count)
+                patterns[group]['sniper_counts'].append(token_metrics.sniper_count)
+                patterns[group]['security_scores'].append(features['security_metrics']['overall_security_score'])
+                patterns[group]['social_scores'].append(features['social_metrics']['social_presence'])
+                patterns[group]['risk_scores'].append(features['risk_assessment']['overall_risk'])
+                
+            except Exception as e:
+                logger.error(f"[2025-02-03 12:46:07] Error processing token {token['address']}: {e}")
+                continue
+        
+        logger.info("\n=== GEM SUCCESS PATTERN ANALYSIS ===")
+        
+        for group in ['quick', 'medium', 'slow']:
+            count = len(time_groups[group])
+            if count == 0:
+                continue
+                
+            logger.info(f"\n🔍 {group.upper()} GEMS (Time to 10x: {'<1h' if group == 'quick' else '1-6h' if group == 'medium' else '>6h'})")
+            logger.info(f"Total Gems in Group: {count}")
+            
+            p = patterns[group]
+            logger.info("\nTypical Characteristics:")
+            logger.info(f"• Market Cap: ${np.median(p['market_caps']):,.0f} (median)")
+            logger.info(f"• Liquidity: ${np.median(p['liquidities']):,.0f} (median)")
+            logger.info(f"• Holders: {np.median(p['holder_counts']):.0f} (median)")
+            logger.info(f"• Snipers: {np.median(p['sniper_counts']):.0f} (median)")
+            logger.info(f"• Security Score: {np.mean(p['security_scores']):.2f}/1.0")
+            logger.info(f"• Social Score: {np.mean(p['social_scores']):.2f}/1.0")
+            logger.info(f"• Risk Score: {np.mean(p['risk_scores']):.2f}/1.0")
+            
+        return patterns
+        
+    except Exception as e:
+        logger.error(f"[2025-02-03 12:46:07] Error analyzing success patterns: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return None
+
+async def analyze_trend_changes(self):
+    """Analizuoja kaip keičiasi gemų šablonai per laiką"""
+    try:
+        logger.info("[2025-02-03 12:46:07] Starting trend change analysis...")
+        successful_tokens = await self.db.get_all_gems()
+        
+        # Grupuojame pagal mėnesius
+        monthly_patterns = {}
+        
+        for token in successful_tokens:
+            try:
+                discovery_time = datetime.fromisoformat(str(token['discovery_timestamp']))
+                month_key = f"{discovery_time.year}-{discovery_time.month:02d}"
+                
+                initial_state = json.loads(token['initial_parameters'])
+                token_metrics = TokenMetrics(**initial_state)
+                features = self.token_analyzer.prepare_features(token_metrics, [])
+                
+                if not features:
+                    continue
+                    
+                if month_key not in monthly_patterns:
+                    monthly_patterns[month_key] = {
+                        'count': 0,
+                        'avg_market_cap': 0,
+                        'avg_liquidity': 0,
+                        'avg_holders': 0,
+                        'avg_security_score': 0,
+                        'avg_social_score': 0,
+                        'avg_risk_score': 0,
+                        'success_time': []
+                    }
+                
+                p = monthly_patterns[month_key]
+                p['count'] += 1
+                p['avg_market_cap'] += token_metrics.market_cap
+                p['avg_liquidity'] += token_metrics.liquidity
+                p['avg_holders'] += token_metrics.holders_count
+                p['avg_security_score'] += features['security_metrics']['overall_security_score']
+                p['avg_social_score'] += features['social_metrics']['social_presence']
+                p['avg_risk_score'] += features['risk_assessment']['overall_risk']
+                p['success_time'].append(token['time_to_10x'])
+                
+            except Exception as e:
+                logger.error(f"[2025-02-03 12:46:07] Error processing token {token['address']}: {e}")
+                continue
+        
+        # Skaičiuojame vidurkius ir analizuojame trendus
+        logger.info("\n=== GEM TREND ANALYSIS OVER TIME ===")
+        
+        sorted_months = sorted(monthly_patterns.keys())
+        for month in sorted_months:
+            p = monthly_patterns[month]
+            count = p['count']
+            if count == 0:
+                continue
+                
+            # Skaičiuojame vidurkius
+            for key in ['avg_market_cap', 'avg_liquidity', 'avg_holders', 'avg_security_score', 
+                       'avg_social_score', 'avg_risk_score']:
+                p[key] /= count
+                
+            logger.info(f"\n📅 {month} Analysis (Total Gems: {count})")
+            logger.info(f"• Average Market Cap: ${p['avg_market_cap']:,.0f}")
+            logger.info(f"• Average Liquidity: ${p['avg_liquidity']:,.0f}")
+            logger.info(f"• Average Holders: {p['avg_holders']:.0f}")
+            logger.info(f"• Average Security Score: {p['avg_security_score']:.2f}/1.0")
+            logger.info(f"• Average Social Score: {p['avg_social_score']:.2f}/1.0")
+            logger.info(f"• Average Risk Score: {p['avg_risk_score']:.2f}/1.0")
+            logger.info(f"• Median Time to 10x: {np.median(p['success_time'])/3600:.1f}h")
+        
+        return monthly_patterns
+        
+    except Exception as e:
+        logger.error(f"[2025-02-03 12:46:07] Error analyzing trend changes: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return None
+
+async def analyze_feature_correlations(self):
+    """Analizuoja feature'ų tarpusavio koreliacijas ir jų įtaką gem statusui"""
+    try:
+        logger.info(f"[2025-02-03 12:46:07] Starting feature correlation analysis...")
+        
+        successful_tokens = await self.db.get_all_gems()
+        failed_tokens = await self.db.get_failed_tokens()
+        
+        all_features = []
+        all_labels = []
+        
+        # Renkame features iš sėkmingų ir nesėkmingų tokenų
+        for token in successful_tokens + failed_tokens:
+            try:
+                initial_state = json.loads(token['initial_parameters'])
+                token_metrics = TokenMetrics(**initial_state)
+                features = self.token_analyzer.prepare_features(token_metrics, [])
+                
+                if not features:
+                    continue
+                    
+                feature_vector = []
+                for category in ['basic_metrics', 'price_volume_metrics', 'holder_metrics', 
+                               'sniper_metrics', 'dev_metrics', 'social_metrics', 
+                               'security_metrics', 'wallet_behavior', 'risk_assessment']:
+                    feature_vector.extend(list(features[category].values()))
+                
+                all_features.append(feature_vector)
+                all_labels.append(1 if token in successful_tokens else 0)
+                
+            except Exception as e:
+                logger.error(f"[2025-02-03 12:46:07] Error processing token {token['address']}: {e}")
+                continue
+        
+        if not all_features:
+            logger.error("[2025-02-03 12:46:07] No features to analyze")
+            return
+        
+        # Konvertuojame į numpy arrays
+        X = np.array(all_features)
+        y = np.array(all_labels)
+        
+        # Skaičiuojame koreliacijas
+        feature_names = self._get_all_feature_names()
+        correlations = []
+        
+        for i, feature in enumerate(feature_names):
+            correlation = np.corrcoef(X[:, i], y)[0, 1]
+            correlations.append((feature, correlation))
+        
+        # Rūšiuojame pagal absoliučią koreliaciją
+        correlations.sort(key=lambda x: abs(x[1]), reverse=True)
+        
+        logger.info("\n=== FEATURE CORRELATION ANALYSIS ===")
+        logger.info("Top 20 Most Correlated Features with Gem Status:")
+        
+        for feature, correlation in correlations[:20]:
+            direction = "POSITIVE" if correlation > 0 else "NEGATIVE"
+            logger.info(f"• {feature}: {abs(correlation):.3f} ({direction})")
+        
+        # Analizuojame feature kombinacijas
+        logger.info("\nTop Feature Combinations:")
+        
+        top_features_idx = [feature_names.index(f[0]) for f in correlations[:5]]
+        X_top = X[:, top_features_idx]
+        
+        success_features = X_top[y == 1]
+        fail_features = X_top[y == 0]
+        
+        logger.info("\nTypical Successful Pattern:")
+        for i, feature in enumerate(correlations[:5]):
+            avg_success = np.mean(success_features[:, i])
+            logger.info(f"• {feature[0]}: {avg_success:.3f}")
+        
+        logger.info("\nTypical Failed Pattern:")
+        for i, feature in enumerate(correlations[:5]):
+            avg_fail = np.mean(fail_features[:, i])
+            logger.info(f"• {feature[0]}: {avg_fail:.3f}")
+        
+    except Exception as e:
+        logger.error(f"[2025-02-03 12:46:07] Error analyzing feature correlations: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         
     
 
@@ -1059,28 +1370,49 @@ class DatabaseManager:
         
     async def mark_as_gem(self, token_address: str):
         """Pažymi token'ą kaip gem ir išsaugo į successful_tokens"""
-        # 1. Atnaujina statusą
-        await self.db.execute(
-            "UPDATE token_initial_states SET status = 'gem' WHERE address = ?",
-            token_address
-        )
-        
-        # 2. Gauna laiko tarpą iki 10x
-        initial_data = await self.get_initial_state(token_address)
-        time_to_10x = await self._calculate_time_to_10x(token_address)
-        
-        # 3. Išsaugo į successful_tokens
-        query = """
-        INSERT INTO successful_tokens (
-            address, initial_parameters, time_to_10x, discovery_timestamp
-        ) VALUES (?, ?, ?, ?)
-        """
-        await self.db.execute(query, (
-            token_address,
-            initial_data.to_dict(),
-            time_to_10x,
-            datetime.now(timezone.utc)
-        ))
+        try:
+            # Patikrinam ar jau ne gem
+            if await self.is_gem(token_address):
+                logger.info(f"[{datetime.now(timezone.utc)}] Token {token_address} is already marked as gem")
+                return
+                
+            # 1. Atnaujina statusą
+            await self.db.execute(
+                "UPDATE token_initial_states SET status = 'gem' WHERE address = ?",
+                token_address
+            )
+            
+            # 2. Gauna pradinę būseną ir laiką iki 10x
+            initial_data = await self.get_initial_state(token_address)
+            if not initial_data:
+                logger.error(f"[{datetime.now(timezone.utc)}] No initial state found for {token_address}")
+                return
+                
+            time_to_10x = await self._calculate_time_to_10x(token_address)
+            
+            # 3. Išsaugo į successful_tokens
+            query = """
+            INSERT INTO successful_tokens (
+                address, initial_parameters, time_to_10x, discovery_timestamp
+            ) VALUES (?, ?, ?, ?)
+            """
+            current_time = datetime.now(timezone.utc)
+            
+            # Konvertuojame į JSON string
+            initial_parameters_json = json.dumps(initial_data.to_dict())
+            
+            await self.db.execute(query, (
+                token_address,
+                initial_parameters_json,  # Dabar perduodame JSON string
+                time_to_10x,
+                current_time
+            ))
+            
+            logger.info(f"[{current_time}] Successfully marked {token_address} as gem")
+            
+        except Exception as e:
+            logger.error(f"[{datetime.now(timezone.utc)}] Error marking as gem: {e}")
+            raise
         
     async def get_all_gems(self):
         """Gauna visus sėkmingus tokenus mokymui"""
@@ -2111,7 +2443,7 @@ class GemFinder:
         await self.db_manager.check_database()
         
         # Užkrauname istorinius duomenis
-        await self.ml_analyzer.load_historical_data()
+        await self.ml_analyzer.train_model()
         
         # Registruojame message handler'į
         @self.telegram.on(events.NewMessage(chats=Config.TELEGRAM_SOURCE_CHATS))
@@ -2425,19 +2757,23 @@ class GemFinder:
                         
                     # Market Cap and ATH
                     elif 'MC:' in line:
-                        mc = re.search(r'\$(\d+\.?\d*)K', clean_line)  # MC visada K
+                        # Market Cap gali būti K arba M
+                        mc_k = re.search(r'\$(\d+\.?\d*)K', clean_line)  # Ieškome K
+                        mc_m = re.search(r'\$(\d+\.?\d*)M', clean_line)  # Ieškome M
                         
-                        # ATH gali būti K arba M
-                        ath_k = re.search(r'\$(\d+\.?\d*)K', clean_line)  # Ieškome K
-                        ath_m = re.search(r'\$(\d+\.?\d*)M', clean_line)  # Ieškome M
-                        
-                        if mc:
-                            data['market_cap'] = float(mc.group(1)) * 1000
-                            
+                        if mc_m:  # Jei M (milijonai)
+                            data['market_cap'] = float(mc_m.group(1)) * 1000000
+                        elif mc_k:  # Jei K (tūkstančiai)
+                            data['market_cap'] = float(mc_k.group(1)) * 1000
+                                
                         # ATH ieškojimas (po 🔝)
-                        ath = re.search(r'🔝 \$(\d+\.?\d*)K', clean_line)
-                        if ath:
-                            data['ath_market_cap'] = float(ath.group(1)) * 1000
+                        ath_m = re.search(r'🔝 \$(\d+\.?\d*)M', clean_line)  # Pirma tikrinam M
+                        ath_k = re.search(r'🔝 \$(\d+\.?\d*)K', clean_line)  # Tada K
+                        
+                        if ath_m:  # Jei M (milijonai)
+                            data['ath_market_cap'] = float(ath_m.group(1)) * 1000000
+                        elif ath_k:  # Jei K (tūkstančiai)
+                            data['ath_market_cap'] = float(ath_k.group(1)) * 1000
                     
                     # Liquidity
                     elif 'Liq:' in line:
