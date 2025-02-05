@@ -50,14 +50,7 @@ class AsyncDatabase:
         """Sukuria reikalingas lenteles jei jų nėra"""
         if self.setup_done:
             return
-        try:
-            await self.execute("""
-                ALTER TABLE token_updates
-                ADD COLUMN update_number INTEGER DEFAULT 0
-            """)
-        except:
-            pass  # Jei stulpelis jau egzistuoja, ignoruojame klaidą
-            
+                    
         try:
             # Token pradinė būsena
             await self.execute("""
@@ -108,7 +101,7 @@ class AsyncDatabase:
                 )
             """)
 
-            # 2. Token updates lentelė
+            # Token updates lentelė
             await self.execute("""
                 CREATE TABLE IF NOT EXISTS token_updates (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,7 +114,7 @@ class AsyncDatabase:
                 )
             """)
 
-            # 3. Successful tokens lentelė
+            # Successful tokens lentelė 
             await self.execute("""
                 CREATE TABLE IF NOT EXISTS successful_tokens (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -129,6 +122,7 @@ class AsyncDatabase:
                     initial_parameters TEXT NOT NULL,
                     time_to_10x INTEGER,
                     discovery_timestamp TIMESTAMP,
+                    update_number INTEGER DEFAULT 0,
                     FOREIGN KEY(address) REFERENCES token_initial_states(address)
                 )
             """)
@@ -144,6 +138,8 @@ class AsyncDatabase:
                     FOREIGN KEY(address) REFERENCES token_initial_states(address)
                 )
             """)
+
+            
             
             # Indeksai
             await self.execute("CREATE INDEX IF NOT EXISTS idx_token_updates_address ON token_updates(address)")
@@ -428,17 +424,18 @@ class TokenHandler:
             logger.error(f"[2025-02-03 14:44:23] Error handling new token: {e}")
             return 0.0
 
-    async def handle_token_update(self, token_address: str, new_data: TokenMetrics, is_new_token: bool = False, update_number: int = 0):
+    async def handle_token_update(self, token_address: str, new_data: TokenMetrics, is_new_token: bool = False):
         """Apdoroja token'o atnaujinimą"""
         try:
             initial_data = await self.db.get_initial_state(token_address)
             if not initial_data:
                 if is_new_token:  # Jei tai naujas token'as
+                    prediction = await self.ml.predict_potential(new_data, 0)  # Naudojame 0 new token modeliui
                     await self.handle_new_token(new_data)  # Naudojame handle_new_token metodą
-                    logger.info(f"[2025-02-05 16:56:54] New token processed via update: {token_address}")
+                    logger.info(f"[2025-02-05 17:44:04] New token processed via update: {token_address} with prediction: {prediction:.2f}")
                     return
                 else:
-                    logger.warning(f"[2025-02-05 16:56:54] Skipping update for unknown token: {token_address}")
+                    logger.warning(f"[2025-02-05 17:44:04] Skipping update for unknown token: {token_address}")
                     return
 
             current_multiplier = new_data.market_cap / initial_data.market_cap
@@ -446,10 +443,11 @@ class TokenHandler:
             # Gauname update numerį
             update_count = await self.db.get_update_count(token_address)
             current_update = update_count + 1
+            logger.info(f"[2025-02-05 17:44:04] Processing update #{current_update} for token {token_address}")
             
             # Išsaugome atnaujinimą
-            await self.db.save_token_update(token_address, new_data, current_update)  # PAKEISTA
-            logger.info(f"[2025-02-05 16:56:54] Token update saved for {token_address}, current multiplier: {current_multiplier:.2f}x")
+            await self.db.save_token_update(token_address, new_data, current_update)
+            logger.info(f"[2025-02-05 17:44:04] Token update saved for {token_address}, current multiplier: {current_multiplier:.2f}x")
 
             # Tikriname ar reikia analizuoti šį update'ą
             if (current_update == 1 and Config.UPDATE_ANALYSIS['analyze_first_update']) or \
@@ -457,8 +455,8 @@ class TokenHandler:
                (current_update == 3 and Config.UPDATE_ANALYSIS['analyze_third_update']):
                 
                 # Atliekame ML analizę
-                prediction = await self.ml.predict_potential(new_data, current_update)  # PAKEISTA
-                logger.info(f"[2025-02-05 16:56:54] Update #{current_update} ML prediction for {token_address}: {prediction:.2f}")
+                prediction = await self.ml.predict_potential(new_data, current_update)
+                logger.info(f"[2025-02-05 17:44:04] Update #{current_update} ML prediction for {token_address}: {prediction:.2f}")
                 
                 # Jei atitinka kriterijus, siunčiame pranešimą
                 if self._meets_basic_criteria(new_data) and prediction >= Config.MIN_GEM_PROBABILITY:
@@ -466,20 +464,20 @@ class TokenHandler:
             
             # Tikriname ar tapo gem (10x)
             if current_multiplier >= 10 and not await self.db.is_gem(token_address):
-                logger.info(f"[2025-02-05 16:56:54] Token reached 10x: {token_address} ({current_multiplier:.2f}X)")
+                logger.info(f"[2025-02-05 17:44:04] Token reached 10x on update #{current_update}: {token_address} ({current_multiplier:.2f}X)")
                 
                 try:
                     # Tada žymime kaip gem ir atnaujiname modelį
-                    await self.db.mark_as_gem(token_address, current_update)  # PAKEISTA
-                    await self.ml.update_model_with_new_gem(initial_data, current_update)  # PAKEISTA
-                    logger.info(f"[2025-02-05 16:56:54] Token marked as gem and model updated: {token_address}")
+                    await self.db.mark_as_gem(token_address, current_update)
+                    await self.ml.update_model_with_new_gem(initial_data, current_update)
+                    logger.info(f"[2025-02-05 17:44:04] Token marked as gem and model updated: {token_address}")
                 except Exception as notification_error:
-                    logger.error(f"[2025-02-05 16:56:54] Error in gem notification process: {notification_error}")
+                    logger.error(f"[2025-02-05 17:44:04] Error in gem notification process: {notification_error}")
                     import traceback
                     logger.error(f"Notification error traceback: {traceback.format_exc()}")
             
         except Exception as e:
-            logger.error(f"[2025-02-05 16:56:54] Error handling token update: {e}")
+            logger.error(f"[2025-02-05 17:44:04] Error handling token update: {e}")
             import traceback
             logger.error(f"Main update error traceback: {traceback.format_exc()}")
             
@@ -1741,14 +1739,15 @@ class DatabaseManager:
             return False
         
     async def get_all_gems(self, update_number: int = 0):
-        """Gauna visus sėkmingus tokenus mokymui"""
+        """Gauna visus sėkmingus tokenus mokymui pagal update numerį"""
         try:
             query = """
-            SELECT * FROM successful_tokens
+            SELECT * FROM successful_tokens 
+            WHERE update_number = ?
             ORDER BY discovery_timestamp DESC
             """
-            results = await self.db.fetch_all(query)
-            logger.info(f"[{datetime.now(timezone.utc)}] Found {len(results) if results else 0} gems in database")
+            results = await self.db.fetch_all(query, update_number)
+            logger.info(f"[{datetime.now(timezone.utc)}] Found {len(results) if results else 0} gems for update #{update_number} in database")
             return results
             
         except Exception as e:
