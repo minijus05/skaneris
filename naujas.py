@@ -241,6 +241,13 @@ class Config:
         'update_frequency': 60,  # sekundės
         'max_active_tokens': 1000
     }
+
+    # Update analysis settings
+    UPDATE_ANALYSIS = {
+        'analyze_first_update': True,
+        'analyze_second_update': True, 
+        'analyze_third_update': True
+    }
     
     # Duomenų bazės parametrai
     DB_SETTINGS = {
@@ -427,20 +434,34 @@ class TokenHandler:
                     return
 
             current_multiplier = new_data.market_cap / initial_data.market_cap
+
+            # Gauname update numerį
+            update_count = await self.db.get_update_count(token_address)
+            current_update = update_count + 1
             
             # Išsaugome atnaujinimą
             await self.db.save_token_update(token_address, new_data)
             logger.info(f"[2025-02-03 14:58:13] Token update saved for {token_address}, current multiplier: {current_multiplier:.2f}x")
+
+            # Tikriname ar reikia analizuoti šį update'ą
+            if (current_update == 1 and Config.UPDATE_ANALYSIS['analyze_first_update']) or \
+               (current_update == 2 and Config.UPDATE_ANALYSIS['analyze_second_update']) or \
+               (current_update == 3 and Config.UPDATE_ANALYSIS['analyze_third_update']):
+                
+                # Atliekame ML analizę
+                prediction = await self.ml.predict_potential(new_data)
+                logger.info(f"[2025-02-05 15:34:58] Update #{current_update} ML prediction for {token_address}: {prediction:.2f}")
+                
+                # Jei atitinka kriterijus, siunčiame pranešimą
+                if self._meets_basic_criteria(new_data) and prediction >= Config.MIN_GEM_PROBABILITY:
+                    await self._send_update_notification(new_data, prediction, current_update)
             
             # Tikriname ar tapo gem (10x)
             if current_multiplier >= 10 and not await self.db.is_gem(token_address):
                 logger.info(f"[2025-02-03 14:58:13] Token reached 10x: {token_address} ({current_multiplier:.2f}X)")
                 
                 try:
-                    # Pirma siunčiame pranešimą
-                    await self._send_gem_confirmed_notification(token_address, initial_data, new_data, current_multiplier)
-                    logger.info(f"[2025-02-03 14:58:13] Gem notification sent for {token_address}")
-                    
+                                        
                     # Tada žymime kaip gem ir atnaujiname modelį
                     await self.db.mark_as_gem(token_address)
                     await self.ml.update_model_with_new_gem(initial_data)
@@ -482,7 +503,7 @@ class TokenHandler:
     async def _send_gem_notification(self, token_data: TokenMetrics, probability: float) -> None:
         """Siunčia pranešimą apie potencialų gem"""
         try:
-            gmgn_url = f"https://gmgn.ai/token/{token_data.address}"
+            gmgn_url = f"https://gmgn.ai/sol/token/{token_data.address}"
             current_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
             
             message = (
@@ -514,35 +535,32 @@ class TokenHandler:
         except Exception as e:
             logger.error(f"[{datetime.now(timezone.utc)}] Error sending gem notification: {e}")
 
-    async def _send_gem_confirmed_notification(self, token_address: str, initial_data: TokenMetrics, 
-        current_data: TokenMetrics, multiplier: float):
-        """Siunčia pranešimą apie patvirtintą gem"""
+    async def _send_update_notification(self, token_data: TokenMetrics, probability: float, update_number: int) -> None:
+        """Siunčia pranešimą apie update'o analizę"""
         try:
-            gmgn_url = f"https://gmgn.ai/token/{token_address}"
+            gmgn_url = f"https://gmgn.ai/token/{token_data.address}"
             current_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
             
             message = (
-                f"🚀 NEW GEM CONFIRMED! 🚀\n\n"
-                f"Token: {initial_data.name} (${initial_data.symbol})\n" 
-                f"Address: <code>{token_address}</code>\n"  # Kopijuojamas tekstas
-                f"Performance:\n"
-                f"Initial MC: ${initial_data.market_cap:,.0f}\n"
-                f"Current MC: ${current_data.market_cap:,.0f}\n"
-                f"Multiplier: {multiplier:.1f}x\n\n"
-                f"Current Stats:\n"
-                f"Holders: {current_data.holders_count}\n"
-                f"Volume 1h: ${current_data.volume_1h:,.0f}\n"
-                f"Liquidity: ${current_data.liquidity:,.0f}\n\n"
+                f"🔄 UPDATE #{update_number} ANALYSIS\n\n"
+                f"Token: {token_data.name} (${token_data.symbol})\n"  # Naudojame token_data
+                f"Address: <code>{token_data.address}</code>\n"  # Naudojame token_data
+                f"Probability: {probability*100:.1f}%\n\n"
+                f"Market Cap: ${token_data.market_cap:,.0f}\n"
+                f"Liquidity: ${token_data.liquidity:,.0f}\n"
+                f"Age: {token_data.age}\n"
+                f"Holders: {token_data.holders_count}\n"
+                f"Volume 1h: ${token_data.volume_1h:,.0f}\n\n"
                 f"Security:\n"
-                f"• Mint: {'✅' if not current_data.mint_enabled else '⚠️'}\n"
-                f"• Freeze: {'✅' if not current_data.freeze_enabled else '⚠️'}\n"
-                f"• Owner: {'✅' if current_data.owner_renounced else '⚠️'}\n\n"
+                f"• Mint: {'✅' if not token_data.mint_enabled else '⚠️'}\n"
+                f"• Freeze: {'✅' if not token_data.freeze_enabled else '⚠️'}\n"
+                f"• Owner: {'✅' if token_data.owner_renounced else '⚠️'}\n\n"
                 f"Links:\n"
                 f"🔗 <a href='{gmgn_url}'>View on GMGN.AI</a>\n"
                 f"----------------------------------------------\n"
-                f"🐦 Twitter: {current_data.twitter_url or 'N/A'}\n"
-                f"🌐 Website: {current_data.website_url or 'N/A'}\n"
-                f"💬 Telegram: {current_data.telegram_url or 'N/A'}\n\n"
+                f"🌐 Website: {token_data.website_url or 'N/A'}\n"
+                f"🐦 Twitter: {token_data.twitter_url or 'N/A'}\n"
+                f"💬 Telegram: {token_data.telegram_url or 'N/A'}\n\n"
                 f"⏰ Found at: {current_time} UTC\n"
                 f"<i>Tap token address to copy</i>"
             )
@@ -550,7 +568,9 @@ class TokenHandler:
             await self._send_notification(message, parse_mode='HTML')
             
         except Exception as e:
-            logger.error(f"[{datetime.now(timezone.utc)}] Error sending gem confirmed notification: {e}")
+            logger.error(f"[2025-02-05 15:34:58] Error sending update notification: {e}")
+
+    
 
     async def _send_notification(self, message: str, parse_mode: str = None) -> None:
         """Siunčia pranešimą į Telegram"""
@@ -1427,10 +1447,21 @@ class DatabaseManager:
             logger.error(f"Query: {query}")
             logger.error(f"Params: {params}")
             raise
-                 
-               
-        
-        
+
+    async def get_update_count(self, token_address: str) -> int:
+        """Grąžina kiek update'ų turi token'as"""
+        try:
+            query = """
+            SELECT COUNT(*) as count 
+            FROM token_updates 
+            WHERE address = ?
+            """
+            result = await self.db.fetch_one(query, token_address)
+            return result['count'] if result else 0
+        except Exception as e:
+            logger.error(f"[2025-02-05 15:34:58] Error getting update count: {e}")
+            return 0
+                
     async def get_initial_state(self, address: str):
         """Gauna pradinę token'o būseną"""
         query = """
