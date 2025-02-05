@@ -1655,30 +1655,55 @@ class DatabaseManager:
     async def save_token_update(self, token_address: str, new_data: TokenMetrics, update_number: int = 0):
         """Išsaugo token'o atnaujinimą"""
         try:
+            logger.info(f"[{datetime.now(timezone.utc)}] Saving update for token {token_address}")
             initial_data = await self.get_initial_state(token_address)
             if not initial_data:
                 logger.warning(f"[{datetime.now(timezone.utc)}] No initial state found for token: {token_address}")
                 return
-                
+
+            # Patikriname, ar šis update_number jau egzistuoja
+            check_query = """
+            SELECT COUNT(*) as count 
+            FROM token_updates 
+            WHERE address = ? AND update_number = ?
+            """
+            existing = await self.db.fetch_one(check_query, (token_address, update_number))
+            if existing and existing['count'] > 0:
+                logger.warning(f"[{datetime.now(timezone.utc)}] Update #{update_number} already exists for token {token_address}")
+                return
+
+            # Patikriname ar yra spragų update_number sekoje
+            sequence_query = """
+            SELECT MAX(update_number) as max_update
+            FROM token_updates 
+            WHERE address = ?
+            """
+            max_result = await self.db.fetch_one(sequence_query, token_address)
+            max_update = max_result['max_update'] if max_result and max_result['max_update'] is not None else -1
+
+            if update_number > max_update + 1:
+                logger.warning(f"[{datetime.now(timezone.utc)}] Gap detected in update sequence for {token_address}. Expected {max_update + 1}, got {update_number}")
+                return
+
             current_multiplier = new_data.market_cap / initial_data.market_cap
-            
-            # Konvertuojame žodyną į JSON string
             metrics_json = json.dumps(new_data.to_dict())
-            
-            # Atnaujinta užklausa su update_number stulpeliu
+
+            # Įterpiame update
             query = """
             INSERT INTO token_updates (
                 address, all_metrics, timestamp, current_multiplier, update_number
             ) VALUES (?, ?, ?, ?, ?)
             """
             await self.db.execute(query, (
-                token_address, 
-                metrics_json,  # Dabar perduodame JSON string vietoj žodyno
+                token_address,
+                metrics_json,
                 datetime.now(timezone.utc),
                 current_multiplier,
-                update_number  # Pridėtas naujas parametras
+                update_number
             ))
-            
+
+            logger.info(f"[{datetime.now(timezone.utc)}] Successfully saved update #{update_number} for token {token_address}")
+
         except Exception as e:
             logger.error(f"[{datetime.now(timezone.utc)}] Error saving token update: {e}")
             raise
@@ -2036,6 +2061,36 @@ class DatabaseManager:
             
         except Exception as e:
             logger.error(f"[{datetime.now(timezone.utc)}] Error marking token as failed: {e}")
+
+    async def check_update_numbers(self):
+        """Tikrina update_number pasiskirstymą duomenų bazėje"""
+        try:
+            logger.info("\n=== UPDATE NUMBERS DISTRIBUTION ===")
+            results = await self.db.fetch_all("""
+                SELECT update_number, COUNT(*) as count 
+                FROM token_updates 
+                GROUP BY update_number 
+                ORDER BY update_number
+            """)
+            
+            for row in results:
+                logger.info(f"Update #{row['update_number']}: {row['count']} records")
+                
+            # Patikriname ar yra trūkstamų update numerių
+            logger.info("\n=== TOKENS WITHOUT UPDATES ===")
+            missing_updates = await self.db.fetch_all("""
+                SELECT t.address, t.status, 
+                       (SELECT COUNT(*) FROM token_updates tu WHERE tu.address = t.address) as update_count
+                FROM token_initial_states t
+                WHERE t.status = 'gem'
+                ORDER BY update_count ASC
+            """)
+            
+            for row in missing_updates:
+                logger.info(f"Token {row['address']} (status: {row['status']}) has {row['update_count']} updates")
+                
+        except Exception as e:
+            logger.error(f"[{datetime.now(timezone.utc)}] Error checking update numbers: {e}")
 
     
 
@@ -2838,7 +2893,8 @@ class GemFinder:
             
             # Patikriname duomenų bazės būseną
             await self.db_manager.check_database()
-            
+
+            await self.db_manager.check_update_numbers()             
             
             
             # Registruojame message handler'į
