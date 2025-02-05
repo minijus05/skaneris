@@ -237,7 +237,7 @@ class Config:
     
     # ML modelio parametrai
     ML_SETTINGS = {
-        'min_gem_multiplier': 10.0,
+        'min_gem_multiplier': 3.0,
         'update_interval': 60,  # sekundės
         'confidence_threshold': 0.7,
         'training_data_limit': 1000  # kiek istorinių gem naudoti apmokymui
@@ -2874,12 +2874,7 @@ class GemFinder:
             self.token_analyzer.ml = self.ml_analyzer
             self.token_handler = TokenHandler(self.db_manager, self.ml_analyzer)
 
-            # NAUJAS KODAS: Inicializuojame visus ML modelius
-            logger.info(f"[2025-02-05 20:19:45] Initializing ML models...")
-            for update_number in range(4):  # Inicializuojame modelius 0-3 update'ams
-                await self.ml_analyzer.train_model(update_number)
-            logger.info(f"[2025-02-05 20:19:45] ML models initialized")
-            
+                        
             # Perduodame jau inicializuotą alert klientą
             self.token_handler.telegram_client = self.alert_client
             
@@ -2903,7 +2898,7 @@ class GemFinder:
             # Patikriname duomenų bazės būseną
             await self.db_manager.check_database()
 
-            await self.db_manager.check_update_numbers()             
+            #await self.db_manager.check_update_numbers()             
             
             
             # Registruojame message handler'į
