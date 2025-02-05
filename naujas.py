@@ -538,7 +538,7 @@ class TokenHandler:
     async def _send_update_notification(self, token_data: TokenMetrics, probability: float, update_number: int) -> None:
         """Siunčia pranešimą apie update'o analizę"""
         try:
-            gmgn_url = f"https://gmgn.ai/token/{token_data.address}"
+            gmgn_url = f"https://gmgn.ai/sol/token/{token_data.address}"
             current_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
             
             message = (
@@ -630,24 +630,54 @@ class MLAnalyzer:
     def __init__(self, db_manager, token_analyzer=None):
         self.db = db_manager
         self.token_analyzer = token_analyzer
-        self.model = None
-        self.scaler = StandardScaler()
+        # Pakeičiame vieną modelį į keturis
+        self.new_token_model = None
+        self.update1_model = None
+        self.update2_model = None
+        self.update3_model = None
+        # Atskiri scaleriai kiekvienam modeliui
+        self.new_token_scaler = StandardScaler()
+        self.update1_scaler = StandardScaler()
+        self.update2_scaler = StandardScaler()
+        self.update3_scaler = StandardScaler()
         
         # Performance tracking
         self.predictions_made = 0
         self.successful_predictions = 0
-        self.prediction_history = []  # Saugosime predikcijų istoriją
+        self.prediction_history = []
         
         if self.token_analyzer is None:
             self.token_analyzer = TokenAnalyzer(db_manager, self)
-
-    async def train_model(self):
-        """Treniruoja modelį naudojant VISUS pradinius token'ų duomenis"""
-        try:
-            successful_tokens = await self.db.get_all_gems()
-            failed_tokens = await self.db.get_failed_tokens()
             
-            logger.info(f"[2025-02-03 13:21:21] Starting model training with {len(successful_tokens)} gems and {len(failed_tokens)} failed tokens")
+    async def train_model(self, update_number: int = 0):
+        """Treniruoja modelį naudojant token'ų duomenis pagal update numerį"""
+        try:
+            # NAUJAS KODAS: Parenkame tinkamą modelį ir scalerį
+            if update_number == 0:
+                current_model = self.new_token_model
+                current_scaler = self.new_token_scaler
+                data_type = "new tokens"
+            elif update_number == 1:
+                current_model = self.update1_model
+                current_scaler = self.update1_scaler
+                data_type = "first updates"
+            elif update_number == 2:
+                current_model = self.update2_model
+                current_scaler = self.update2_scaler
+                data_type = "second updates"
+            elif update_number == 3:
+                current_model = self.update3_model
+                current_scaler = self.update3_scaler
+                data_type = "third updates"
+            else:
+                logger.error(f"[2025-02-05 16:20:51] Invalid update number: {update_number}")
+                return
+
+            # PAKEISTA: Gauname duomenis pagal update numerį
+            successful_tokens = await self.db.get_all_gems(update_number)
+            failed_tokens = await self.db.get_failed_tokens(update_number)
+            
+            logger.info(f"[2025-02-05 16:20:51] Starting model training for {data_type} with {len(successful_tokens)} gems and {len(failed_tokens)} failed tokens")
             
             def process_features(token_metrics, features):
                 """Helper funkcija feature vektoriaus formavimui"""
@@ -744,7 +774,7 @@ class MLAnalyzer:
             # Process successful tokens
             X_success = []
             y_success = []
-            logger.info(f"[2025-02-03 13:21:21] Processing successful tokens...")
+            logger.info(f"[2025-02-05 16:20:51] Processing successful {data_type}...")
             
             for token in successful_tokens:
                 try:
@@ -759,16 +789,16 @@ class MLAnalyzer:
                     if feature_vector:
                         X_success.append(feature_vector)
                         y_success.append(1)  # 1 = success
-                        logger.info(f"[2025-02-03 13:21:21] Processed gem {token['address']} - Features: {len(feature_vector)}")
+                        logger.info(f"[2025-02-05 16:20:51] Processed gem {token['address']} - Features: {len(feature_vector)}")
                         
                 except Exception as e:
-                    logger.error(f"[2025-02-03 13:21:21] Error processing gem {token['address']}: {e}")
+                    logger.error(f"[2025-02-05 16:20:51] Error processing gem {token['address']}: {e}")
                     continue
 
             # Process failed tokens
             X_failed = []
             y_failed = []
-            logger.info(f"[2025-02-03 13:21:21] Processing failed tokens...")
+            logger.info(f"[2025-02-05 16:20:51] Processing failed {data_type}...")
             
             for token in failed_tokens:
                 try:
@@ -785,22 +815,22 @@ class MLAnalyzer:
                         y_failed.append(0)  # 0 = failed
                         
                 except Exception as e:
-                    logger.error(f"[2025-02-03 13:21:21] Error processing failed token {token['address']}: {e}")
+                    logger.error(f"[2025-02-05 16:20:51] Error processing failed token {token['address']}: {e}")
                     continue
 
             # Combine and normalize data
             if not X_success or not X_failed:
-                logger.error("[2025-02-03 13:21:21] No valid training data")
+                logger.error(f"[2025-02-05 16:20:51] No valid training data for {data_type}")
                 return
                 
             X = np.vstack([X_success, X_failed])
             y = np.hstack([y_success, y_failed])
             
-            # Normalize features
-            X_scaled = self.scaler.fit_transform(X)
+            # PAKEISTA: Naudojame pasirinktą scalerį
+            X_scaled = current_scaler.fit_transform(X)
             
-            # Train model
-            self.model = RandomForestClassifier(
+            # PAKEISTA: Sukuriame ir apmokome pasirinktą modelį
+            new_model = RandomForestClassifier(
                 n_estimators=100,
                 max_depth=10,
                 min_samples_split=4,
@@ -808,51 +838,88 @@ class MLAnalyzer:
                 random_state=42
             )
             
-            self.model.fit(X_scaled, y)
+            new_model.fit(X_scaled, y)
+            
+            # PAKEISTA: Priskiriame naują modelį atitinkamam kintamajam
+            if update_number == 0:
+                self.new_token_model = new_model
+            elif update_number == 1:
+                self.update1_model = new_model
+            elif update_number == 2:
+                self.update2_model = new_model
+            else:
+                self.update3_model = new_model
             
             # Analyze feature importance
             feature_names = self._get_all_feature_names()
-            importances = self.model.feature_importances_
+            importances = new_model.feature_importances_
             
-            logger.info("\n=== FEATURE IMPORTANCE ANALYSIS ===")
+            logger.info(f"\n=== FEATURE IMPORTANCE ANALYSIS FOR {data_type.upper()} ===")
             feature_importance = list(zip(feature_names, importances))
             feature_importance.sort(key=lambda x: x[1], reverse=True)
             
-            logger.info("Top 20 Most Important Features:")
+            logger.info(f"Top 20 Most Important Features for {data_type}:")
             for name, importance in feature_importance[:20]:
                 logger.info(f"{name}: {importance*100:.2f}%")
             
             # Calculate training accuracy
-            train_accuracy = self.model.score(X_scaled, y)
-            logger.info(f"[2025-02-03 13:21:21] Training Accuracy: {train_accuracy*100:.2f}%")
-            logger.info(f"[2025-02-03 13:21:21] Model successfully trained with {len(X)} samples")
+            train_accuracy = new_model.score(X_scaled, y)
+            logger.info(f"[2025-02-05 16:20:51] Training Accuracy for {data_type}: {train_accuracy*100:.2f}%")
+            logger.info(f"[2025-02-05 16:20:51] Model successfully trained with {len(X)} samples")
             
         except Exception as e:
-            logger.error(f"[2025-02-03 13:21:21] Error training model: {e}")
+            logger.error(f"[2025-02-05 16:20:51] Error training model for {data_type}: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
 
-    async def predict_potential(self, token_data: TokenMetrics) -> float:
+    # Pakeičiame metodo deklaraciją, pridedame update_number parametrą
+    async def predict_potential(self, token_data: TokenMetrics, update_number: int = 0) -> float:
         """Prognozuoja token'o potencialą tapti gemu"""
         try:
             if token_data is None:
-                logger.error("[2025-02-03 16:31:24] Token data is None")
+                logger.error("[2025-02-05 16:17:12] Token data is None")
                 return 0.0
+            
+            # NAUJAS KODAS: Parenkame tinkamą modelį ir scalerį pagal update numerį
+            if update_number == 0:
+                model = self.new_token_model
+                scaler = self.new_token_scaler
+            elif update_number == 1:
+                model = self.update1_model
+                scaler = self.update1_scaler
+            elif update_number == 2:
+                model = self.update2_model
+                scaler = self.update2_scaler
+            elif update_number == 3:
+                model = self.update3_model
+                scaler = self.update3_scaler
+            else:
+                logger.error(f"[2025-02-05 16:17:12] Invalid update number: {update_number}")
+                return 0.0
+
+            # PAKEISTAS KODAS: Patikriname ar yra modelis ir apmokome jei reikia
+            if not model:
+                logger.info(f"[2025-02-05 16:17:12] Model for update {update_number} not found, training...")
+                await self.train_model(update_number)
+                if update_number == 0:
+                    model = self.new_token_model
+                elif update_number == 1:
+                    model = self.update1_model
+                elif update_number == 2:
+                    model = self.update2_model
+                else:
+                    model = self.update3_model
                 
-            if not self.model:
-                logger.info("[2025-02-03 16:31:24] Model not found, training new model...")
-                await self.train_model()
-                if not self.model:
-                    logger.error("[2025-02-03 16:31:24] Failed to train model")
+                if not model:
+                    logger.error(f"[2025-02-05 16:17:12] Failed to train model for update {update_number}")
                     return 0.0
 
-            # Analizuojame token'ą
+            # Likęs kodas lieka tas pats, tik pakeičiame self.model į model ir self.scaler į scaler
             features = self.token_analyzer.prepare_features(token_data, [])
             if not features:
-                logger.error(f"[2025-02-03 16:31:24] Failed to analyze token {token_data.address}")
+                logger.error(f"[2025-02-05 16:17:12] Failed to analyze token {token_data.address}")
                 return 0.0
                 
-            # Naudojame tą patį feature vektorių formavimo būdą kaip train_model metode
             feature_vector = []
             
             # Basic metrics
@@ -938,17 +1005,19 @@ class MLAnalyzer:
             ])
 
             X = np.array(feature_vector).reshape(1, -1)
-            X_scaled = self.scaler.transform(X)
+            # PAKEISTA: naudojame pasirinktą scalerį
+            X_scaled = scaler.transform(X)
             
             if np.isnan(X_scaled).any():
-                logger.error("[2025-02-03 16:31:24] NaN values in prediction features")
+                logger.error("[2025-02-05 16:17:12] NaN values in prediction features")
                 return 0.0
                 
-            probability = self.model.predict_proba(X_scaled)[0][1]
+            # PAKEISTA: naudojame pasirinktą modelį
+            probability = model.predict_proba(X_scaled)[0][1]
             return probability
                 
         except Exception as e:
-            logger.error(f"[2025-02-03 16:31:24] Error predicting potential: {e}")
+            logger.error(f"[2025-02-05 16:17:12] Error predicting potential: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             return 0.0
@@ -1043,30 +1112,41 @@ class MLAnalyzer:
         except Exception as e:
             logger.error(f"[2025-02-03 12:44:18] Error in decision summary: {e}")
 
-    async def update_model_with_new_gem(self, token_data: TokenMetrics):
+    async def update_model_with_new_gem(self, token_data: TokenMetrics, update_number: int = 0):
         """Atnaujina modelį su nauju gem"""
         try:
             if token_data is None:
-                logger.error(f"[2025-02-03 12:44:18] Cannot update model - token data is None")
+                logger.error(f"[2025-02-05 16:27:26] Cannot update model - token data is None")
+                return
+
+            # Parenkame modelį pagal update numerį
+            if update_number == 0:
+                model_type = "new token model"
+            elif update_number == 1:
+                model_type = "first update model"
+            elif update_number == 2:
+                model_type = "second update model"
+            elif update_number == 3:
+                model_type = "third update model"
+            else:
+                logger.error(f"[2025-02-05 16:27:26] Invalid update number: {update_number}")
                 return
 
             # Atnaujiname statistiką
             self.successful_predictions += 1
             
-            # Retrainuojame modelį su naujais duomenimis
-            await self.train_model()
+            # Retrainuojame specifinį modelį su naujais duomenimis
+            await self.train_model(update_number)
             
             # Loginame accuracy
             if self.predictions_made > 0:
                 accuracy = (self.successful_predictions / self.predictions_made) * 100
-                logger.info(f"[2025-02-03 12:44:18] Current model accuracy: {accuracy:.2f}%")
-                logger.info(f"[2025-02-03 12:44:18] Total predictions: {self.predictions_made}")
-                logger.info(f"[2025-02-03 12:44:18] Successful predictions: {self.successful_predictions}")
-            
-            
+                logger.info(f"[2025-02-05 16:27:26] Current {model_type} accuracy: {accuracy:.2f}%")
+                logger.info(f"[2025-02-05 16:27:26] Total predictions for {model_type}: {self.predictions_made}")
+                logger.info(f"[2025-02-05 16:27:26] Successful predictions for {model_type}: {self.successful_predictions}")
             
         except Exception as e:
-            logger.error(f"[2025-02-03 12:44:18] Error updating model: {e}")
+            logger.error(f"[2025-02-05 16:27:26] Error updating {model_type}: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
 
