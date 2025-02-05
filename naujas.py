@@ -899,15 +899,14 @@ class MLAnalyzer:
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
 
-    # Pakeičiame metodo deklaraciją, pridedame update_number parametrą
     async def predict_potential(self, token_data: TokenMetrics, update_number: int = 0) -> float:
         """Prognozuoja token'o potencialą tapti gemu"""
         try:
             if token_data is None:
-                logger.error("[2025-02-05 16:17:12] Token data is None")
+                logger.error("[2025-02-05 20:19:45] Token data is None")
                 return 0.0
             
-            # NAUJAS KODAS: Parenkame tinkamą modelį ir scalerį pagal update numerį
+            # Parenkame tinkamą modelį ir scalerį
             if update_number == 0:
                 model = self.new_token_model
                 scaler = self.new_token_scaler
@@ -921,7 +920,11 @@ class MLAnalyzer:
                 model = self.update3_model
                 scaler = self.update3_scaler
             else:
-                logger.error(f"[2025-02-05 16:17:12] Invalid update number: {update_number}")
+                logger.error(f"[2025-02-05 20:19:45] Invalid update number: {update_number}")
+                return 0.0
+
+            if not model:
+                logger.error(f"[2025-02-05 20:19:45] Model for update {update_number} not initialized")
                 return 0.0
 
             # PAKEISTAS KODAS: Patikriname ar yra modelis ir apmokome jei reikia
@@ -2870,6 +2873,12 @@ class GemFinder:
             self.ml_analyzer = MLAnalyzer(self.db_manager, self.token_analyzer)
             self.token_analyzer.ml = self.ml_analyzer
             self.token_handler = TokenHandler(self.db_manager, self.ml_analyzer)
+
+            # NAUJAS KODAS: Inicializuojame visus ML modelius
+            logger.info(f"[2025-02-05 20:19:45] Initializing ML models...")
+            for update_number in range(4):  # Inicializuojame modelius 0-3 update'ams
+                await self.ml_analyzer.train_model(update_number)
+            logger.info(f"[2025-02-05 20:19:45] ML models initialized")
             
             # Perduodame jau inicializuotą alert klientą
             self.token_handler.telegram_client = self.alert_client
@@ -2913,7 +2922,7 @@ class GemFinder:
         """Atnaujina DB ir ML modelį periodiškai"""
         while True:
             try:
-                logger.info(f"[2025-02-03 18:07:45] Starting database and ML update...")
+                logger.info(f"[2025-02-05 20:37:57] Starting database and ML update...")
                 
                 # 1. Patikriname ir pažymime neaktyvius tokenus
                 await self.token_handler.check_inactive_tokens()
@@ -2935,13 +2944,20 @@ class GemFinder:
                                 multiplier = latest_update['market_cap'] / initial_data.market_cap
                                 if multiplier >= 10:
                                     await self.db_manager.mark_as_gem(token['address'])
-                                    logger.info(f"[2025-02-03 18:07:45] New gem found: {token['address']} ({multiplier:.2f}X)")
+                                    logger.info(f"[2025-02-05 20:37:57] New gem found: {token['address']} ({multiplier:.2f}X)")
                     except Exception as e:
-                        logger.error(f"[2025-02-03 18:07:45] Error checking token status: {e}")
+                        logger.error(f"[2025-02-05 20:37:57] Error checking token status: {e}")
+
+                # 4. Periodiškai atnaujiname VISUS ML modelius
+                logger.info(f"[2025-02-05 20:37:57] Starting model training for all models...")
                 
-                # 4. Atnaujiname ML modelį su duomenimis iš DB
+                # Treniruojame visus modelius (new token ir update modelius)
+                await self.ml_analyzer.train_model(0)  # New token modelis
+                await self.ml_analyzer.train_model(1)  # Update 1 modelis
+                await self.ml_analyzer.train_model(2)  # Update 2 modelis  
+                await self.ml_analyzer.train_model(3)  # Update 3 modelis
                 
-                await self.ml_analyzer.train_model()
+                logger.info(f"[2025-02-05 20:37:57] All models training completed")
                 
                 # 5. Atnaujiname duomenų bazės būseną
                 await self.db_manager.check_database()
@@ -2950,7 +2966,7 @@ class GemFinder:
                 await asyncio.sleep(Config.RETRAIN_INTERVAL * 3600)
                 
             except Exception as e:
-                logger.error(f"[2025-02-03 18:07:45] Error in periodic checks: {e}")
+                logger.error(f"[2025-02-05 20:37:57] Error in periodic checks: {e}")
                 await asyncio.sleep(60)
 
     async def stop(self):
