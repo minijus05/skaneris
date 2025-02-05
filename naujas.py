@@ -1625,7 +1625,7 @@ class DatabaseManager:
         result = await self.db.fetch_one(query, address)
         return result and result['status'] == 'gem'
 
-    async def save_token_update(self, token_address: str, new_data: TokenMetrics):
+    async def save_token_update(self, token_address: str, new_data: TokenMetrics, update_number: int = 0):
         """Išsaugo token'o atnaujinimą"""
         try:
             initial_data = await self.get_initial_state(token_address)
@@ -1638,16 +1638,18 @@ class DatabaseManager:
             # Konvertuojame žodyną į JSON string
             metrics_json = json.dumps(new_data.to_dict())
             
+            # Atnaujinta užklausa su update_number stulpeliu
             query = """
             INSERT INTO token_updates (
-                address, all_metrics, timestamp, current_multiplier
-            ) VALUES (?, ?, ?, ?)
+                address, all_metrics, timestamp, current_multiplier, update_number
+            ) VALUES (?, ?, ?, ?, ?)
             """
             await self.db.execute(query, (
                 token_address, 
                 metrics_json,  # Dabar perduodame JSON string vietoj žodyno
                 datetime.now(timezone.utc),
-                current_multiplier
+                current_multiplier,
+                update_number  # Pridėtas naujas parametras
             ))
             
         except Exception as e:
@@ -1667,22 +1669,22 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error saving sniper wallets: {e}")
         
-    async def mark_as_gem(self, token_address: str):
+    async def mark_as_gem(self, token_address: str, update_number: int = 0):
         """Pažymi token'ą kaip gem ir išsaugo į successful_tokens"""
         try:
             current_time = datetime.now(timezone.utc)
             
             # Patikrinam ar jau ne gem
             if await self.is_gem(token_address):
-                logger.info(f"[2025-02-03 15:01:59] Token {token_address} is already marked as gem")
+                logger.info(f"[2025-02-05 16:48:44] Token {token_address} is already marked as gem")
                 return False
                 
             # Patikriname ar jau yra successful_tokens lentelėje
-            check_query = "SELECT address FROM successful_tokens WHERE address = ?"
-            existing = await self.db.fetch_one(check_query, token_address)
+            check_query = "SELECT address FROM successful_tokens WHERE address = ? AND update_number = ?"
+            existing = await self.db.fetch_one(check_query, (token_address, update_number))
             
             if existing:
-                logger.info(f"[2025-02-03 15:01:59] Token {token_address} already in successful_tokens")
+                logger.info(f"[2025-02-05 16:48:44] Token {token_address} already in successful_tokens")
                 return True
                 
             # 1. Atnaujina statusą
@@ -1690,23 +1692,23 @@ class DatabaseManager:
                 "UPDATE token_initial_states SET status = 'gem' WHERE address = ?",
                 token_address
             )
-            logger.info(f"[2025-02-03 15:01:59] Updated status to gem for {token_address}")
+            logger.info(f"[2025-02-05 16:48:44] Updated status to gem for {token_address}")
             
             # 2. Gauna pradinę būseną ir laiką iki 10x
             initial_data = await self.get_initial_state(token_address)
             if not initial_data:
-                logger.error(f"[2025-02-03 15:01:59] No initial state found for {token_address}")
+                logger.error(f"[2025-02-05 16:48:44] No initial state found for {token_address}")
                 return False
                 
             time_to_10x = await self._calculate_time_to_10x(token_address)
-            logger.info(f"[2025-02-03 15:01:59] Calculated time to 10x for {token_address}: {time_to_10x} seconds")
+            logger.info(f"[2025-02-05 16:48:44] Calculated time to 10x for {token_address}: {time_to_10x} seconds")
             
             try:
                 # 3. Išsaugo į successful_tokens su REPLACE INTO vietoj INSERT
                 query = """
                 REPLACE INTO successful_tokens (
-                    address, initial_parameters, time_to_10x, discovery_timestamp
-                ) VALUES (?, ?, ?, ?)
+                    address, initial_parameters, time_to_10x, discovery_timestamp, update_number
+                ) VALUES (?, ?, ?, ?, ?)
                 """
                 
                 # Konvertuojame į JSON string
@@ -1716,23 +1718,24 @@ class DatabaseManager:
                     token_address,
                     initial_parameters_json,
                     time_to_10x,
-                    current_time
+                    current_time,
+                    update_number
                 ))
                 
-                logger.info(f"[2025-02-03 15:01:59] Successfully marked {token_address} as gem")
+                logger.info(f"[2025-02-05 16:48:44] Successfully marked {token_address} as gem")
                 return True
                 
             except Exception as insert_error:
-                logger.error(f"[2025-02-03 15:01:59] Error inserting into successful_tokens: {insert_error}")
+                logger.error(f"[2025-02-05 16:48:44] Error inserting into successful_tokens: {insert_error}")
                 return False
                 
         except Exception as e:
-            logger.error(f"[2025-02-03 15:01:59] Error marking as gem: {e}")
+            logger.error(f"[2025-02-05 16:48:44] Error marking as gem: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             return False
         
-    async def get_all_gems(self):
+    async def get_all_gems(self, update_number: int = 0):
         """Gauna visus sėkmingus tokenus mokymui"""
         try:
             query = """
@@ -1746,7 +1749,7 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"[{datetime.now(timezone.utc)}] Error getting gems: {e}")
             return []
-
+        
     async def get_active_tokens(self):
         """Gauna visus aktyvius stebimus tokenus"""
         query = """
@@ -1941,7 +1944,7 @@ class DatabaseManager:
             logger.error(f"Traceback: {traceback.format_exc()}")
 
                 
-    async def get_failed_tokens(self):
+    async def get_failed_tokens(self, update_number: int = 0):
         """Gauna visus nepavykusius tokenus"""
         try:
             query = """
@@ -1949,11 +1952,13 @@ class DatabaseManager:
             ORDER BY discovery_timestamp DESC
             """
             results = await self.db.fetch_all(query)
-            logger.info(f"[{datetime.now(timezone.utc)}] Found {len(results) if results else 0} failed tokens")
+            logger.info(f"[{datetime.now(timezone.utc)}] Found {len(results)} failed tokens")
             return results
+            
         except Exception as e:
             logger.error(f"[{datetime.now(timezone.utc)}] Error getting failed tokens: {e}")
             return []
+    
     async def get_latest_token_update(self, token_address: str):
         """Gauna paskutinį token'o atnaujinimą iš DB"""
         try:
