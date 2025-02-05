@@ -781,21 +781,41 @@ class MLAnalyzer:
             
             for token in successful_tokens:
                 try:
-                    initial_state = json.loads(token['initial_parameters'])
-                    token_metrics = TokenMetrics(**initial_state)
+                    # Parenkame duomenis pagal update_number
+                    if update_number == 0:
+                        # Naujiems tokenams naudojame pradinę būseną
+                        state_data = json.loads(token['initial_parameters'])
+                        token_metrics = TokenMetrics(**state_data)
+                    else:
+                        # Update atveju gauname update duomenis
+                        update_query = """
+                            SELECT all_metrics FROM token_updates 
+                            WHERE address = ? AND update_number = ? 
+                            ORDER BY timestamp DESC LIMIT 1
+                        """
+                        # PATAISYTA: parametrai perduodami kaip tuple, ne tuple viduje tuple
+                        # Perduodame parametrus kaip vieną tuple
+                        update = await self.db.fetch_one(update_query, (token['address'], update_number))
+                        if not update:
+                            logger.warning(f"[2025-02-05 19:13:40] No update {update_number} data found for gem {token['address']}")
+                            continue
+                            
+                        state_data = json.loads(update['all_metrics'])
+                        token_metrics = TokenMetrics(**state_data)
+                        
                     features = self.token_analyzer.prepare_features(token_metrics, [])
-                    
                     if not features:
+                        logger.warning(f"[2025-02-05 19:13:40] Failed to prepare features for gem {token['address']}")
                         continue
                         
                     feature_vector = process_features(token_metrics, features)
                     if feature_vector:
                         X_success.append(feature_vector)
                         y_success.append(1)  # 1 = success
-                        logger.info(f"[2025-02-05 16:20:51] Processed gem {token['address']} - Features: {len(feature_vector)}")
+                        logger.info(f"[2025-02-05 19:13:40] Processed gem {token['address']} - Update {update_number} - Features: {len(feature_vector)}")
                         
                 except Exception as e:
-                    logger.error(f"[2025-02-05 16:20:51] Error processing gem {token['address']}: {e}")
+                    logger.error(f"[2025-02-05 19:13:40] Error processing gem {token['address']}: {e}")
                     continue
 
             # Process failed tokens
@@ -1741,12 +1761,12 @@ class DatabaseManager:
     async def get_all_gems(self, update_number: int = 0):
         """Gauna visus sėkmingus tokenus mokymui pagal update numerį"""
         try:
+            # Grąžiname visus gemus, nepriklausomai nuo update_number
             query = """
             SELECT * FROM successful_tokens 
-            WHERE update_number = ?
             ORDER BY discovery_timestamp DESC
             """
-            results = await self.db.fetch_all(query, update_number)
+            results = await self.db.fetch_all(query)
             logger.info(f"[{datetime.now(timezone.utc)}] Found {len(results) if results else 0} gems for update #{update_number} in database")
             return results
             
