@@ -191,6 +191,10 @@ class AsyncDatabase:
             await self.connect()
             
         try:
+            # Jei args yra tuple viename tuple, išpakuojame jį
+            if len(args) == 1 and isinstance(args[0], tuple):
+                args = args[0]
+                
             async with self.conn.execute(query, args) as cursor:
                 return await cursor.fetchone()
         except Exception as e:
