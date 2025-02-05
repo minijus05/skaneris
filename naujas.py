@@ -420,17 +420,17 @@ class TokenHandler:
             logger.error(f"[2025-02-03 14:44:23] Error handling new token: {e}")
             return 0.0
 
-    async def handle_token_update(self, token_address: str, new_data: TokenMetrics, is_new_token: bool = False):
+    async def handle_token_update(self, token_address: str, new_data: TokenMetrics, is_new_token: bool = False, update_number: int = 0):
         """Apdoroja token'o atnaujinimą"""
         try:
             initial_data = await self.db.get_initial_state(token_address)
             if not initial_data:
                 if is_new_token:  # Jei tai naujas token'as
                     await self.handle_new_token(new_data)  # Naudojame handle_new_token metodą
-                    logger.info(f"[2025-02-03 14:58:13] New token processed via update: {token_address}")
+                    logger.info(f"[2025-02-05 16:56:54] New token processed via update: {token_address}")
                     return
                 else:
-                    logger.warning(f"[2025-02-03 14:58:13] Skipping update for unknown token: {token_address}")
+                    logger.warning(f"[2025-02-05 16:56:54] Skipping update for unknown token: {token_address}")
                     return
 
             current_multiplier = new_data.market_cap / initial_data.market_cap
@@ -440,8 +440,8 @@ class TokenHandler:
             current_update = update_count + 1
             
             # Išsaugome atnaujinimą
-            await self.db.save_token_update(token_address, new_data)
-            logger.info(f"[2025-02-03 14:58:13] Token update saved for {token_address}, current multiplier: {current_multiplier:.2f}x")
+            await self.db.save_token_update(token_address, new_data, current_update)  # PAKEISTA
+            logger.info(f"[2025-02-05 16:56:54] Token update saved for {token_address}, current multiplier: {current_multiplier:.2f}x")
 
             # Tikriname ar reikia analizuoti šį update'ą
             if (current_update == 1 and Config.UPDATE_ANALYSIS['analyze_first_update']) or \
@@ -449,8 +449,8 @@ class TokenHandler:
                (current_update == 3 and Config.UPDATE_ANALYSIS['analyze_third_update']):
                 
                 # Atliekame ML analizę
-                prediction = await self.ml.predict_potential(new_data)
-                logger.info(f"[2025-02-05 15:34:58] Update #{current_update} ML prediction for {token_address}: {prediction:.2f}")
+                prediction = await self.ml.predict_potential(new_data, current_update)  # PAKEISTA
+                logger.info(f"[2025-02-05 16:56:54] Update #{current_update} ML prediction for {token_address}: {prediction:.2f}")
                 
                 # Jei atitinka kriterijus, siunčiame pranešimą
                 if self._meets_basic_criteria(new_data) and prediction >= Config.MIN_GEM_PROBABILITY:
@@ -458,23 +458,20 @@ class TokenHandler:
             
             # Tikriname ar tapo gem (10x)
             if current_multiplier >= 10 and not await self.db.is_gem(token_address):
-                logger.info(f"[2025-02-03 14:58:13] Token reached 10x: {token_address} ({current_multiplier:.2f}X)")
+                logger.info(f"[2025-02-05 16:56:54] Token reached 10x: {token_address} ({current_multiplier:.2f}X)")
                 
                 try:
-                                        
                     # Tada žymime kaip gem ir atnaujiname modelį
-                    await self.db.mark_as_gem(token_address)
-                    await self.ml.update_model_with_new_gem(initial_data)
-                    logger.info(f"[2025-02-03 14:58:13] Token marked as gem and model updated: {token_address}")
+                    await self.db.mark_as_gem(token_address, current_update)  # PAKEISTA
+                    await self.ml.update_model_with_new_gem(initial_data, current_update)  # PAKEISTA
+                    logger.info(f"[2025-02-05 16:56:54] Token marked as gem and model updated: {token_address}")
                 except Exception as notification_error:
-                    logger.error(f"[2025-02-03 14:58:13] Error in gem notification process: {notification_error}")
+                    logger.error(f"[2025-02-05 16:56:54] Error in gem notification process: {notification_error}")
                     import traceback
                     logger.error(f"Notification error traceback: {traceback.format_exc()}")
             
-            
-
         except Exception as e:
-            logger.error(f"[2025-02-03 14:58:13] Error handling token update: {e}")
+            logger.error(f"[2025-02-05 16:56:54] Error handling token update: {e}")
             import traceback
             logger.error(f"Main update error traceback: {traceback.format_exc()}")
             
