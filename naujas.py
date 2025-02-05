@@ -50,6 +50,13 @@ class AsyncDatabase:
         """Sukuria reikalingas lenteles jei jų nėra"""
         if self.setup_done:
             return
+        try:
+            await self.execute("""
+                ALTER TABLE token_updates
+                ADD COLUMN update_number INTEGER DEFAULT 0
+            """)
+        except:
+            pass  # Jei stulpelis jau egzistuoja, ignoruojame klaidą
             
         try:
             # Token pradinė būsena
@@ -109,6 +116,7 @@ class AsyncDatabase:
                     all_metrics TEXT NOT NULL,
                     timestamp TIMESTAMP,
                     current_multiplier REAL,
+                    update_number INTEGER DEFAULT 0,
                     FOREIGN KEY(address) REFERENCES token_initial_states(address)
                 )
             """)
@@ -3175,13 +3183,20 @@ class GemFinder:
                             data['ath_market_cap'] = float(ath_k.group(1)) * 1000
                     
                     # Liquidity
-                    elif 'Liq:' in line:
-                        liq = re.search(r'\$(\d+\.?\d*)K\s*\((\d+)\s*SOL\)', clean_line)
-                        if liq:
-                            data['liquidity'] = {
-                                'usd': float(liq.group(1)) * 1000,
-                                'sol': float(liq.group(2))
-                            }
+                    elif 'Liq:' in line or 'vLiq:' in line:  # Pridėtas vLiq patikrinimas
+                        try:
+                            if 'vLiq:' in line:
+                                liq = re.search(r'\$(\d+\.?\d*)K\s*\((\d+\.?\d*)\s*SOL\)', clean_line)
+                            else:
+                                liq = re.search(r'\$(\d+\.?\d*)K\s*\((\d+)\s*SOL\)', clean_line)
+                                
+                            if liq:
+                                data['liquidity'] = {
+                                    'usd': float(liq.group(1)) * 1000,
+                                    'sol': float(liq.group(2))
+                                }
+                        except Exception as e:
+                            print(f"Liquidity error: {str(e)}")
                     
                     # Volume
                     elif 'Vol:' in line:
