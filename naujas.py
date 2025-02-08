@@ -427,14 +427,14 @@ class TokenHandler:
             logger.info(f"{current_time} Saved initial state for: {token_data.address}")
             
             # Patikriname ar jau turime security patikrinimą DB
-            security_check = await self.db.get_security_check(token_data.address)
+            security_check = await self.db_manager.get_security_check(token_data.address)
             
             if not security_check:
                 # Atliekame security patikrinimą
                 security_risk = self.token_analyzer._assess_security_risk(token_data)
                 
                 # Išsaugome rezultatą į DB
-                await self.db.save_security_check(token_data.address, security_risk)
+                await self.db_manager.save_security_check(token_data.address, security_risk)
                 
                 if security_risk >= 1.0:
                     logger.warning(f"{current_time} Token {token_data.address} failed security checks")
