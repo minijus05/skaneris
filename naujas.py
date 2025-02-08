@@ -423,17 +423,17 @@ class TokenHandler:
             current_time = "[2025-02-08 16:37:14]"
             
             # Išsaugome pradinę būseną
-            await self.db_manager.save_initial_state(token_data)
+            await self.db.save_initial_state(token_data)
             logger.info(f"{current_time} Saved initial state for: {token_data.address}")
             
             # Patikriname ar jau turime security patikrinimą DB
-            security_check = await self.db_manager.get_security_check(token_data.address)
+            security_check = await self.db.get_security_check(token_data.address) 
             
             security_risk = None
             if not security_check:
                 # Atliekame security patikrinimą TIK jei jo dar nėra DB
                 security_risk = await self.token_analyzer._assess_security_risk(token_data)
-                await self.db_manager.save_security_check(token_data.address, security_risk)
+                await self.db.save_security_check(token_data.address, security_risk)
             else:
                 security_risk = security_check['security_risk']
                 
