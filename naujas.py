@@ -406,37 +406,51 @@ class TokenHandler:
         self.db = db_manager
         self.ml = ml_analyzer
         self.telegram_client = None
+        self.token_analyzer = TokenAnalyzer()  # Inicializuojame TokenAnalyzer
         
     async def handle_new_token(self, token_data: TokenMetrics):
         """Apdoroja naują token'ą"""
         try:
+            current_time = "[2025-02-08 16:37:14]"
+            
             # Išsaugome pradinę būseną
             await self.db.save_initial_state(token_data)
-            logger.info(f"[2025-02-08 16:22:33] Saved initial state for: {token_data.address}")
+            logger.info(f"{current_time} Saved initial state for: {token_data.address}")
             
-            # PIRMA - tikriname saugumo reikalavimus
-            if self.token_analyzer:  # Patikriname ar token_analyzer egzistuoja
+            # Patikriname ar jau turime security patikrinimą DB
+            security_check = await self.db.get_security_check(token_data.address)
+            
+            if not security_check:
+                # Atliekame security patikrinimą
                 security_risk = self.token_analyzer._assess_security_risk(token_data)
+                
+                # Išsaugome rezultatą į DB
+                await self.db.save_security_check(token_data.address, security_risk)
+                
                 if security_risk >= 1.0:
-                    logger.warning(f"[2025-02-08 16:22:33] Token {token_data.address} failed security checks - skipping notification")
+                    logger.warning(f"{current_time} Token {token_data.address} failed security checks")
                     return 0.0
-                logger.info(f"[2025-02-08 16:22:33] Token {token_data.address} passed security checks")
+            elif security_check['security_risk'] >= 1.0:
+                logger.info(f"{current_time} Token {token_data.address} previously failed security checks")
+                return 0.0
             
-            # ANTRA - gauname ML predikcijas
+            logger.info(f"{current_time} Token {token_data.address} passed security checks")
+            
+            # Gauname ML predikcijas
             initial_prediction = await self.ml.predict_potential(token_data)
-            logger.info(f"[2025-02-08 16:22:33] Initial ML prediction for {token_data.address}: {initial_prediction:.2f}")
+            logger.info(f"{current_time} Initial ML prediction for {token_data.address}: {initial_prediction:.2f}")
             
-            # TREČIA - tikriname basic kriterijus ir siunčiame pranešimą
+            # Tikriname basic kriterijus ir siunčiame pranešimą
             if self._meets_basic_criteria(token_data) and initial_prediction >= Config.MIN_GEM_PROBABILITY:
-                logger.info(f"[2025-02-08 16:22:33] Token {token_data.address} meets all criteria - sending notification")
+                logger.info(f"{current_time} Token {token_data.address} meets all criteria - sending notification")
                 await self._send_gem_notification(token_data, initial_prediction)
             else:
-                logger.info(f"[2025-02-08 16:22:33] Token {token_data.address} does not meet basic criteria or has low prediction")
+                logger.info(f"{current_time} Token {token_data.address} does not meet basic criteria or has low prediction")
             
             return initial_prediction
             
         except Exception as e:
-            logger.error(f"[2025-02-08 16:22:33] Error handling new token: {e}")
+            logger.error(f"{current_time} Error handling new token: {e}")
             return 0.0
 
     async def handle_token_update(self, token_address: str, new_data: TokenMetrics, is_new_token: bool = False):
