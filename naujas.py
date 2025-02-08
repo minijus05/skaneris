@@ -412,20 +412,31 @@ class TokenHandler:
         try:
             # Išsaugome pradinę būseną
             await self.db.save_initial_state(token_data)
-            logger.info(f"[2025-02-03 14:44:23] Saved initial state for: {token_data.address}")
+            logger.info(f"[2025-02-08 16:22:33] Saved initial state for: {token_data.address}")
             
-            # Gauname ML predikcijas tik vieną kartą
+            # PIRMA - tikriname saugumo reikalavimus
+            if self.token_analyzer:  # Patikriname ar token_analyzer egzistuoja
+                security_risk = self.token_analyzer._assess_security_risk(token_data)
+                if security_risk >= 1.0:
+                    logger.warning(f"[2025-02-08 16:22:33] Token {token_data.address} failed security checks - skipping notification")
+                    return 0.0
+                logger.info(f"[2025-02-08 16:22:33] Token {token_data.address} passed security checks")
+            
+            # ANTRA - gauname ML predikcijas
             initial_prediction = await self.ml.predict_potential(token_data)
-            logger.info(f"[2025-02-03 14:44:23] Initial ML prediction for {token_data.address}: {initial_prediction:.2f}")
+            logger.info(f"[2025-02-08 16:22:33] Initial ML prediction for {token_data.address}: {initial_prediction:.2f}")
             
-            # Tikriname potencialą su jau turima predikcija
+            # TREČIA - tikriname basic kriterijus ir siunčiame pranešimą
             if self._meets_basic_criteria(token_data) and initial_prediction >= Config.MIN_GEM_PROBABILITY:
+                logger.info(f"[2025-02-08 16:22:33] Token {token_data.address} meets all criteria - sending notification")
                 await self._send_gem_notification(token_data, initial_prediction)
+            else:
+                logger.info(f"[2025-02-08 16:22:33] Token {token_data.address} does not meet basic criteria or has low prediction")
             
             return initial_prediction
             
         except Exception as e:
-            logger.error(f"[2025-02-03 14:44:23] Error handling new token: {e}")
+            logger.error(f"[2025-02-08 16:22:33] Error handling new token: {e}")
             return 0.0
 
     async def handle_token_update(self, token_address: str, new_data: TokenMetrics, is_new_token: bool = False):
@@ -508,16 +519,20 @@ class TokenHandler:
             logger.error(f"[2025-02-03 14:44:23] Error in basic criteria check: {e}")
             return False
 
-    async def _send_gem_notification(self, token_data: TokenMetrics, probability: float) -> None:
+    async def _send_gem_notification(self, token_data: TokenMetrics, probability: float, security_passed: bool = True) -> None:
         """Siunčia pranešimą apie potencialų gem"""
         try:
             gmgn_url = f"https://gmgn.ai/sol/token/{token_data.address}"
-            current_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            current_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Pridedame saugumo statusą į pranešimą
+            security_status = "✅ SAFE" if security_passed else "⚠️ RISKY"
             
             message = (
                 f"🔍 POTENTIAL GEM DETECTED!\n\n"
-                f"Token: {token_data.name} (${token_data.symbol})\n"  # Naudojame token_data
-                f"Address: <code>{token_data.address}</code>\n"  # Naudojame token_data
+                f"Token: {token_data.name} (${token_data.symbol})\n"
+                f"Address: <code>{token_data.address}</code>\n"
+                f"Security Status: {security_status}\n"
                 f"Probability: {probability*100:.1f}%\n\n"
                 f"Market Cap: ${token_data.market_cap:,.0f}\n"
                 f"Liquidity: ${token_data.liquidity:,.0f}\n"
@@ -527,7 +542,8 @@ class TokenHandler:
                 f"Security:\n"
                 f"• Mint: {'✅' if not token_data.mint_enabled else '⚠️'}\n"
                 f"• Freeze: {'✅' if not token_data.freeze_enabled else '⚠️'}\n"
-                f"• Owner: {'✅' if token_data.owner_renounced else '⚠️'}\n\n"
+                f"• Owner: {'✅' if token_data.owner_renounced else '⚠️'}\n"
+                f"• LP Lock: {'✅' if token_data.lp_burnt_percentage >= 80 else '⚠️'} ({token_data.lp_burnt_percentage}%)\n\n"
                 f"Links:\n"
                 f"🔗 <a href='{gmgn_url}'>View on GMGN.AI</a>\n"
                 f"----------------------------------------------\n"
@@ -541,7 +557,7 @@ class TokenHandler:
             await self._send_notification(message, parse_mode='HTML')
             
         except Exception as e:
-            logger.error(f"[{datetime.now(timezone.utc)}] Error sending gem notification: {e}")
+            logger.error(f"[2025-02-08 16:23:51] Error sending gem notification: {e}")
 
     async def _send_update_notification(self, token_data: TokenMetrics, probability: float, update_number: int) -> None:
         """Siunčia pranešimą apie update'o analizę"""
@@ -2787,70 +2803,102 @@ class TokenAnalyzer:
     def _assess_security_risk(self, token: TokenMetrics) -> float:
         """Vertina saugumo riziką"""
         try:
+            current_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+            logger.info(f"\n{'='*50}")
+            logger.info(f"🔒 SECURITY ASSESSMENT FOR TOKEN:")
+            logger.info(f"📝 Name: {token.name} (${token.symbol})")
+            logger.info(f"📍 Address: {token.address}")
+            logger.info(f"⏰ Time: {current_time}")
+            logger.info(f"{'='*50}\n")
+
             # 1. LP užrakintas >80%
+            logger.info("1️⃣ Checking LP Lock Status:")
             if token.lp_burnt_percentage < 80:
-                return 1.0  # Maximum risk jei neatitinka
+                logger.warning(f"❌ FAILED: LP locked only {token.lp_burnt_percentage}% (required >80%)")
+                logger.info(f"{'='*50}")
+                return 1.0
+            logger.info(f"✅ PASSED: LP {token.lp_burnt_percentage}% locked\n")
 
             # 2. Owner teisės renounced
+            logger.info("2️⃣ Checking Owner Rights:")
             if not token.owner_renounced:
-                return 1.0  # Maximum risk jei neatitinka
+                logger.warning("❌ FAILED: Owner rights not renounced")
+                logger.info(f"{'='*50}")
+                return 1.0
+            logger.info("✅ PASSED: Owner rights renounced\n")
 
-            # 3. >1000 holder'ių 
-            if token.holders_count < 1000:
-                return 1.0  # Maximum risk jei neatitinka
+            # 3. >1000 holder'ių
+            logger.info("3️⃣ Checking Holders Count:")
+            if token.holders_count < 500:
+                logger.warning(f"❌ FAILED: Only {token.holders_count:,} holders (required >1,000)")
+                logger.info(f"{'='*50}")
+                return 1.0
+            logger.info(f"✅ PASSED: {token.holders_count:,} holders\n")
 
             # 4. Top holder'iai turi <20%
+            logger.info("4️⃣ Checking Top Holders Concentration:")
             if token.top_holder_percentage > 20:
-                return 1.0  # Maximum risk jei neatitinka
+                logger.warning(f"❌ FAILED: Top holders own {token.top_holder_percentage}% (required <20%)")
+                logger.info(f"{'='*50}")
+                return 1.0
+            logger.info(f"✅ PASSED: Top holders own {token.top_holder_percentage}%\n")
 
             # 5. Stabilūs volume/kainų pokyčiai
+            logger.info("5️⃣ Checking Price/Volume Stability:")
             volume_volatility = token.volume_1h / max(token.volume_24h / 24, 0.0001)
             if volume_volatility > 3.0 or abs(token.price_change_1h) > 50.0:
-                return 1.0  # Maximum risk jei neatitinka
+                logger.warning(f"❌ FAILED: High volatility detected")
+                logger.warning(f"   • Price Change 1h: {token.price_change_1h}%")
+                logger.warning(f"   • Volume 1h: ${token.volume_1h:,.2f}")
+                logger.warning(f"   • Volume 24h: ${token.volume_24h:,.2f}")
+                logger.info(f"{'='*50}")
+                return 1.0
+            logger.info(f"✅ PASSED: Stable price and volume movements\n")
 
             # 6. Dev'ai turi <5% tokenų
+            logger.info("6️⃣ Checking Dev Holdings:")
             if token.dev_token_percentage > 5:
-                return 1.0  # Maximum risk jei neatitinka
+                logger.warning(f"❌ FAILED: Devs own {token.dev_token_percentage}% (required <5%)")
+                logger.info(f"{'='*50}")
+                return 1.0
+            logger.info(f"✅ PASSED: Devs own {token.dev_token_percentage}%\n")
 
             # 7. Nėra mint/freeze teisių
+            logger.info("7️⃣ Checking Mint/Freeze Rights:")
             if token.mint_enabled or token.freeze_enabled:
-                return 1.0  # Maximum risk jei turi mint arba freeze teises
+                logger.warning("❌ FAILED: Has mint or freeze rights")
+                logger.warning(f"   • Mint Enabled: {token.mint_enabled}")
+                logger.warning(f"   • Freeze Enabled: {token.freeze_enabled}")
+                logger.info(f"{'='*50}")
+                return 1.0
+            logger.info("✅ PASSED: No mint or freeze rights\n")
 
-            # Jei praėjo visus reikalavimus, skaičiuojame bendrą security risk
+            # Skaičiuojame bendrą security risk
             contract_security = self._assess_contract_security(token)
             ownership_security = self._calculate_ownership_score(token)
             lp_security = token.lp_burnt_percentage / 100
-                
-            # Skaičiuojame bendrą security risk
             security_risk = 1.0 - ((contract_security + ownership_security + lp_security) / 3)
-                
-            return min(security_risk, 1.0)  # Normalizuojame iki 1.0
+
+            # Final Summary
+            logger.info(f"\n{'='*50}")
+            logger.info("🎉 TOKEN PASSED ALL SECURITY CHECKS!")
+            logger.info("\n📊 FINAL SECURITY METRICS:")
+            logger.info(f"• Contract Security Score: {contract_security:.2f}/1.00")
+            logger.info(f"• Ownership Security Score: {ownership_security:.2f}/1.00")
+            logger.info(f"• LP Security Score: {lp_security:.2f}/1.00")
+            logger.info(f"• Overall Security Risk: {security_risk:.2f}/1.00")
+            logger.info(f"{'='*50}\n")
+
+            return min(security_risk, 1.0)
 
         except Exception as e:
-            logger.error(f"[2025-02-08 15:24:42] Error in security risk assessment: {e}")
+            logger.error(f"\n{'='*50}")
+            logger.error(f"❌ ERROR in security assessment for {token.address}")
+            logger.error(f"Error details: {str(e)}")
+            logger.error(f"{'='*50}\n")
             return 1.0
 
-    def _assess_security_risk(self, token: TokenMetrics) -> float:
-        """Vertina saugumo riziką"""
-        try:
-            # Renkame saugumo faktorius
-            contract_security = self._assess_contract_security(token)
-            ownership_security = self._calculate_ownership_score(token)
-            lp_security = token.lp_burnt_percentage / 100
-            
-            # Skaičiuojame bendrą security risk
-            security_risk = 1.0 - ((contract_security + ownership_security + lp_security) / 3)
-            
-            # Pridedame papildomą riziką jei yra mint arba freeze
-            if token.mint_enabled:
-                security_risk += 0.3
-            if token.freeze_enabled:
-                security_risk += 0.2
-                
-            return min(security_risk, 1.0)  # Normalizuojame iki 1.0
-        except:
-            return 1.0
-
+    
     def _assess_holder_risk(self, token: TokenMetrics) -> float:
         """Vertina holder'ių riziką"""
         try:
