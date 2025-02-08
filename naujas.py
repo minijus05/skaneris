@@ -2135,6 +2135,24 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"[{datetime.now(timezone.utc)}] Error checking update numbers: {e}")
 
+    async def get_security_check(self, address: str):
+        """Gauna token'o security patikrinimo rezultatus"""
+        query = """
+        SELECT security_risk, check_time 
+        FROM token_security 
+        WHERE address = ?
+        """
+        return await self.db.fetch_one(query, address)
+
+    async def save_security_check(self, address: str, security_risk: float):
+        """Išsaugo token'o security patikrinimo rezultatus"""
+        query = """
+        INSERT OR REPLACE INTO token_security (
+            address, security_risk, check_time
+        ) VALUES (?, ?, CURRENT_TIMESTAMP)
+        """
+        await self.db.execute(query, (address, security_risk))
+
     
 
 class TokenAnalytics:
@@ -3116,6 +3134,16 @@ class GemFinder:
                 await self.token_handler.handle_token_update(token_address, current_data, is_new_token=is_new_token)
             
             self.processed_messages.add(message_id)
+
+            # Patikriname ar jau turime security patikrinimą DB
+            security_check = await self.db.get_security_check(token_data.address)
+
+            if not security_check:
+                # Atliekame security patikrinimą
+                security_risk = self.token_analyzer._assess_security_risk(token_data)
+                
+                # Išsaugome rezultatą į DB
+                await self.db.save_security_check(token_data.address, security_risk)
             
         except Exception as e:
             logger.error(f"[2025-01-31 13:08:54] Error handling message: {e}")
