@@ -432,7 +432,7 @@ class TokenHandler:
             security_risk = None
             if not security_check:
                 # Atliekame security patikrinimą TIK jei jo dar nėra DB
-                security_risk = await self.token_analyzer._assess_security_risk(token_data)
+                security_risk = self.token_analyzer._assess_security_risk(token_data)
                 await self.db.save_security_check(token_data.address, security_risk)
             else:
                 security_risk = security_check['security_risk']
