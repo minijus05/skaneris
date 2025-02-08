@@ -423,26 +423,24 @@ class TokenHandler:
             current_time = "[2025-02-08 16:37:14]"
             
             # Išsaugome pradinę būseną
-            await self.db.save_initial_state(token_data)
+            await self.db_manager.save_initial_state(token_data)
             logger.info(f"{current_time} Saved initial state for: {token_data.address}")
             
             # Patikriname ar jau turime security patikrinimą DB
             security_check = await self.db_manager.get_security_check(token_data.address)
             
+            security_risk = None
             if not security_check:
-                # Atliekame security patikrinimą
-                security_risk = self.token_analyzer._assess_security_risk(token_data)
-                
-                # Išsaugome rezultatą į DB
+                # Atliekame security patikrinimą TIK jei jo dar nėra DB
+                security_risk = await self.token_analyzer._assess_security_risk(token_data)
                 await self.db_manager.save_security_check(token_data.address, security_risk)
+            else:
+                security_risk = security_check['security_risk']
                 
-                if security_risk >= 1.0:
-                    logger.warning(f"{current_time} Token {token_data.address} failed security checks")
-                    return 0.0
-            elif security_check['security_risk'] >= 1.0:
-                logger.info(f"{current_time} Token {token_data.address} previously failed security checks")
+            if security_risk >= 1.0:
+                logger.warning(f"{current_time} Token {token_data.address} failed security checks")
                 return 0.0
-            
+                
             logger.info(f"{current_time} Token {token_data.address} passed security checks")
             
             # Gauname ML predikcijas
@@ -457,7 +455,7 @@ class TokenHandler:
                 logger.info(f"{current_time} Token {token_data.address} does not meet basic criteria or has low prediction")
             
             return initial_prediction
-            
+                
         except Exception as e:
             logger.error(f"{current_time} Error handling new token: {e}")
             return 0.0
@@ -3135,16 +3133,7 @@ class GemFinder:
             
             self.processed_messages.add(message_id)
 
-            # Patikriname ar jau turime security patikrinimą DB
-            security_check = await self.db.get_security_check(token_data.address)
-
-            if not security_check:
-                # Atliekame security patikrinimą
-                security_risk = self.token_analyzer._assess_security_risk(token_data)
-                
-                # Išsaugome rezultatą į DB
-                await self.db.save_security_check(token_data.address, security_risk)
-            
+                        
         except Exception as e:
             logger.error(f"[2025-01-31 13:08:54] Error handling message: {e}")
 
