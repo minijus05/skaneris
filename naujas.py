@@ -139,6 +139,15 @@ class AsyncDatabase:
                 )
             """)
 
+            # Security lentelė - PRIDĖTI ČIA
+            await self.execute("""
+                CREATE TABLE IF NOT EXISTS token_security (
+                    address TEXT PRIMARY KEY,
+                    security_risk REAL,
+                    check_time DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
             
             
             # Indeksai
@@ -406,7 +415,7 @@ class TokenHandler:
         self.db = db_manager
         self.ml = ml_analyzer
         self.telegram_client = None
-        self.token_analyzer = TokenAnalyzer()  # Inicializuojame TokenAnalyzer
+        self.token_analyzer = TokenAnalyzer(db_manager, ml_analyzer)  # Inicializuojame TokenAnalyzer
         
     async def handle_new_token(self, token_data: TokenMetrics):
         """Apdoroja naują token'ą"""
