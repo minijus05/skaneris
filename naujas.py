@@ -232,15 +232,15 @@ class Config:
     
     # Gem detection settings
     MIN_GEM_PROBABILITY = 0.1
-    MIN_MC_FOR_GEM = 30000
+    MIN_MC_FOR_GEM = 20000
     MAX_MC_FOR_GEM = 1000000
     
     # ML modelio parametrai
     ML_SETTINGS = {
-        'min_gem_multiplier': 3.0,
+        'min_gem_multiplier': 5.0,
         'update_interval': 60,  # sekundės
         'confidence_threshold': 0.7,
-        'training_data_limit': 1000  # kiek istorinių gem naudoti apmokymui
+        'training_data_limit': 2000  # kiek istorinių gem naudoti apmokymui
     }
     
     # Token stebėjimo parametrai
@@ -253,8 +253,8 @@ class Config:
     # Update analysis settings
     UPDATE_ANALYSIS = {
         'analyze_first_update': True,
-        'analyze_second_update': True, 
-        'analyze_third_update': True
+        'analyze_second_update': False, 
+        'analyze_third_update': False
     }
     
     # Duomenų bazės parametrai
@@ -446,7 +446,7 @@ class TokenHandler:
 
             # Gauname update numerį
             update_count = await self.db.get_update_count(token_address)
-            current_update = update_count + 1
+            current_update = update_count
             logger.info(f"[2025-02-05 17:44:04] Processing update #{current_update} for token {token_address}")
             
             # Išsaugome atnaujinimą
@@ -454,9 +454,9 @@ class TokenHandler:
             logger.info(f"[2025-02-05 17:44:04] Token update saved for {token_address}, current multiplier: {current_multiplier:.2f}x")
 
             # Tikriname ar reikia analizuoti šį update'ą
-            if (current_update == 1 and Config.UPDATE_ANALYSIS['analyze_first_update']) or \
-               (current_update == 2 and Config.UPDATE_ANALYSIS['analyze_second_update']) or \
-               (current_update == 3 and Config.UPDATE_ANALYSIS['analyze_third_update']):
+            if (current_update == 0 and Config.UPDATE_ANALYSIS['analyze_first_update']) or \
+               (current_update == 1 and Config.UPDATE_ANALYSIS['analyze_second_update']) or \
+               (current_update == 2 and Config.UPDATE_ANALYSIS['analyze_third_update']):
                 
                 # Atliekame ML analizę
                 prediction = await self.ml.predict_potential(new_data, current_update)
@@ -466,9 +466,10 @@ class TokenHandler:
                 if self._meets_basic_criteria(new_data) and prediction >= Config.MIN_GEM_PROBABILITY:
                     await self._send_update_notification(new_data, prediction, current_update)
             
-            # Tikriname ar tapo gem (10x)
-            if current_multiplier >= 10 and not await self.db.is_gem(token_address):
-                logger.info(f"[2025-02-05 17:44:04] Token reached 10x on update #{current_update}: {token_address} ({current_multiplier:.2f}X)")
+            # Tikriname ar tapo gem pagal nustatytą multiplier
+            if current_multiplier >= Config.ML_SETTINGS['min_gem_multiplier'] and not await self.db.is_gem(token_address):
+                logger.info(f"[2025-02-05 23:05:02] Token reached {Config.ML_SETTINGS['min_gem_multiplier']}x on update #{current_update}: {token_address} ({current_multiplier:.2f}X)")
+                
                 
                 try:
                     # Tada žymime kaip gem ir atnaujiname modelį
@@ -2781,6 +2782,52 @@ class TokenAnalyzer:
             
             return sum(risk_factors) / len(risk_factors)
         except:
+            return 1.0
+
+    def _assess_security_risk(self, token: TokenMetrics) -> float:
+        """Vertina saugumo riziką"""
+        try:
+            # 1. LP užrakintas >80%
+            if token.lp_burnt_percentage < 80:
+                return 1.0  # Maximum risk jei neatitinka
+
+            # 2. Owner teisės renounced
+            if not token.owner_renounced:
+                return 1.0  # Maximum risk jei neatitinka
+
+            # 3. >1000 holder'ių 
+            if token.holders_count < 1000:
+                return 1.0  # Maximum risk jei neatitinka
+
+            # 4. Top holder'iai turi <20%
+            if token.top_holder_percentage > 20:
+                return 1.0  # Maximum risk jei neatitinka
+
+            # 5. Stabilūs volume/kainų pokyčiai
+            volume_volatility = token.volume_1h / max(token.volume_24h / 24, 0.0001)
+            if volume_volatility > 3.0 or abs(token.price_change_1h) > 50.0:
+                return 1.0  # Maximum risk jei neatitinka
+
+            # 6. Dev'ai turi <5% tokenų
+            if token.dev_token_percentage > 5:
+                return 1.0  # Maximum risk jei neatitinka
+
+            # 7. Nėra mint/freeze teisių
+            if token.mint_enabled or token.freeze_enabled:
+                return 1.0  # Maximum risk jei turi mint arba freeze teises
+
+            # Jei praėjo visus reikalavimus, skaičiuojame bendrą security risk
+            contract_security = self._assess_contract_security(token)
+            ownership_security = self._calculate_ownership_score(token)
+            lp_security = token.lp_burnt_percentage / 100
+                
+            # Skaičiuojame bendrą security risk
+            security_risk = 1.0 - ((contract_security + ownership_security + lp_security) / 3)
+                
+            return min(security_risk, 1.0)  # Normalizuojame iki 1.0
+
+        except Exception as e:
+            logger.error(f"[2025-02-08 15:24:42] Error in security risk assessment: {e}")
             return 1.0
 
     def _assess_security_risk(self, token: TokenMetrics) -> float:
